@@ -278,9 +278,8 @@ class OnPolicyRunner:
                 # Log information
                 self.log(locals())
                 # Save model
-                if self.model_dir is not None and it % self.save_interval == 0:
+                if it % self.save_interval == 0:
                     self.save(os.path.join(self.model_dir, f"model_{it}.pt"))
-
 
             # Clear episode infos
             ep_infos.clear()
@@ -295,11 +294,7 @@ class OnPolicyRunner:
 
         # Save the final model after training
         if self.model_dir is not None and not self.disable_logs:
-            self.save(
-                os.path.join(
-                    self.model_dir, f"model_{self.current_learning_iteration}.pt"
-                )
-            )
+            self.save(os.path.join(self.model_dir, f"model_{self.current_learning_iteration}.pt"))
 
 
     def log(self, locs: dict, width: int = 80, pad: int = 35):
