@@ -8,8 +8,9 @@ from __future__ import annotations
 import os
 import statistics
 import time
-import torch
 from collections import deque
+
+import torch
 
 import rsl_rl
 from rsl_rl.algorithms import PPO, Distillation
@@ -125,11 +126,19 @@ class OnPolicyRunner:
         self.disable_logs = self.is_distributed and self.gpu_global_rank != 0
         # Logging
         self.log_dir = log_dir
+        self.model_dir = (
+            os.path.join(log_dir, "models") if log_dir is not None else None
+        )
         self.writer = None
         self.tot_timesteps = 0
         self.tot_time = 0
         self.current_learning_iteration = 0
         self.git_status_repos = [rsl_rl.__file__]
+
+        # create model directory
+        if self.model_dir is not None and not os.path.exists(self.model_dir):
+            os.makedirs(self.model_dir, exist_ok=True)
+
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False):  # noqa: C901
         # initialize writer
@@ -269,8 +278,9 @@ class OnPolicyRunner:
                 # Log information
                 self.log(locals())
                 # Save model
-                if it % self.save_interval == 0:
-                    self.save(os.path.join(self.log_dir, f"model_{it}.pt"))
+                if self.model_dir is not None and it % self.save_interval == 0:
+                    self.save(os.path.join(self.model_dir, f"model_{it}.pt"))
+
 
             # Clear episode infos
             ep_infos.clear()
@@ -284,8 +294,13 @@ class OnPolicyRunner:
                         self.writer.save_file(path)
 
         # Save the final model after training
-        if self.log_dir is not None and not self.disable_logs:
-            self.save(os.path.join(self.log_dir, f"model_{self.current_learning_iteration}.pt"))
+        if self.model_dir is not None and not self.disable_logs:
+            self.save(
+                os.path.join(
+                    self.model_dir, f"model_{self.current_learning_iteration}.pt"
+                )
+            )
+
 
     def log(self, locs: dict, width: int = 80, pad: int = 35):
         # Compute the collection size
