@@ -11,7 +11,6 @@ import time
 from collections import deque
 
 import torch
-
 import rsl_rl
 from rsl_rl.algorithms import PPO, Distillation
 from rsl_rl.env import VecEnv
