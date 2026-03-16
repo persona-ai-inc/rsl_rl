@@ -92,6 +92,8 @@ class Distillation:
         # Compute the actions
         self.transition.actions = self.student(obs, stochastic_output=True).detach()
         self.transition.privileged_actions = self.teacher(obs).detach()
+        self.transition.encoder_output = self.student.get_encoder_output()
+        self.transition.privileged_encoder_output = self.teacher.get_encoder_output()
         # Record the observations
         self.transition.observations = obs
         return self.transition.actions  # type: ignore
@@ -133,6 +135,9 @@ class Distillation:
 
                 # Behavior cloning loss
                 behavior_loss = self.loss_fn(actions, batch.privileged_actions)
+                if batch.encoder_output is not None and batch.privileged_encoder_output is not None:
+                    encoder_output = self.student.get_encoder_output()
+                    behavior_loss += self.loss_fn(encoder_output, batch.privileged_encoder_output)
 
                 # Total loss
                 loss = loss + behavior_loss

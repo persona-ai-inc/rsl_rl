@@ -125,6 +125,10 @@ class MLPModel(nn.Module):
     def get_hidden_state(self) -> HiddenState:
         """Return the recurrent hidden state (``None`` for MLP)."""
         return None
+    
+    def get_encoder_output(self)-> torch.Tensor | None: 
+        """Return the encoder output (``None`` for MLP)."""
+        return None
 
     def detach_hidden_state(self, dones: torch.Tensor | None = None) -> None:
         """Detach therecurrent hidden state for truncated backpropagation (no-op)."""

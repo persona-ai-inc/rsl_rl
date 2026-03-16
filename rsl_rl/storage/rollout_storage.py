@@ -55,10 +55,16 @@ class RolloutStorage:
             # For distillation
             self.privileged_actions: torch.Tensor | None = None
             """Privileged (teacher) actions (distillation only)."""
+            self.privileged_encoder_output: torch.Tensor | None = None
+            """Privileged (teacher) encoder output (distillation only)."""
 
             # For recurrent networks
             self.hidden_states: tuple[HiddenState, HiddenState] = (None, None)
             """Hidden states for recurrent networks, e.g., (actor, critic)."""
+
+            # For encoder networks
+            self.encoder_output: torch.Tensor | None = None
+            """Encoder output for encoder networks."""
 
         def clear(self) -> None:
             """Reset all transition fields to None."""

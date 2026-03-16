@@ -32,15 +32,14 @@ class TCNAttentionModel(MLPModel):
         obs: TensorDict,
         obs_groups: dict[str, list[str]],
         obs_set: str,
-        encoder_obs_set: str,
         output_dim: int,
-        encoder_output_dim: int,
         hidden_dims: tuple[int, ...] | list[int] = (256, 256, 256),
-        encoder_hidden_dims: tuple[int, ...] | list[int] = (256, 256, 256),
         activation: str = "elu",
         obs_normalization: bool = False,
         distribution_cfg: dict | None = None,
-        history_length: int = 1,
+        encoder_obs_set: str = "encoder", 
+        encoder_output_dim: int = 0, 
+        encoder_hidden_dims: tuple[int, ...] | list[int] = (256, 256, 256),
     ) -> None:
         """Initialize the RNN-based model.
 
@@ -69,7 +68,9 @@ class TCNAttentionModel(MLPModel):
             obs_normalization,
             distribution_cfg,
         )
-        self.history_length = history_length
+        # TODO: use hard-coded history proprioception key
+        self.history_length = obs["history_proprioception"].shape[1]
+        # self.history_length = history_length
         self.encoder_output_dim = encoder_output_dim
 
         # resolve encoder observation groups and dimension
@@ -89,6 +90,8 @@ class TCNAttentionModel(MLPModel):
         )
         self.attention = SelfAttention(input_dim=encoder_output_dim)
 
+        self.latent_encoder = None
+
     def get_latent(
         self, obs: TensorDict, masks: torch.Tensor | None = None, hidden_state: HiddenState = None
     ) -> torch.Tensor:
@@ -99,11 +102,16 @@ class TCNAttentionModel(MLPModel):
         latent_encoder = self.encoder_obs_normalizer(latent_encoder)
         latent_encoder = self.tcn(latent_encoder)
         latent_encoder = self.attention(latent_encoder).flatten(start_dim=1)
+        self.latent_encoder = latent_encoder
 
         # Concatenate proprioceptive observation and normalize
         latent_policy = super().get_latent(obs)
 
         return torch.cat([latent_policy, latent_encoder], dim=-1)
+    
+    def get_encoder_output(self) -> torch.Tensor | None:
+        """Return the encoder output (``None`` for MLP)."""
+        return self.latent_encoder
 
     def _get_latent_dim(self) -> int:
         """Return the latent dimensionality consumed by the MLP head."""
