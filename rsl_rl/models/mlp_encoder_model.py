@@ -64,15 +64,6 @@ class MLPEncoderModel(MLPModel):
 
         # resolve encoder observation groups and dimension
         self.encoder_obs_groups, self.encoder_obs_dim = self._get_obs_dim(obs, obs_groups, encoder_obs_set)
-        # Observation normalization
-        self.encoder_obs_normalization = obs_normalization
-        if obs_normalization:
-            self.encoder_obs_normalizer = EmpiricalNormalization(self.encoder_obs_dim)
-        else:
-            self.encoder_obs_normalizer = torch.nn.Identity()
-
-        # encoder MLP
-        self.encoder = MLP(self.encoder_obs_dim, encoder_output_dim, encoder_hidden_dims, encoder_activation)
 
         # Initialize the parent MLP model
         super().__init__(
@@ -85,6 +76,14 @@ class MLPEncoderModel(MLPModel):
             obs_normalization,
             distribution_cfg,
         )
+
+        if obs_normalization:
+            self.encoder_obs_normalizer = EmpiricalNormalization(self.encoder_obs_dim)
+        else:
+            self.encoder_obs_normalizer = torch.nn.Identity()
+
+        # encoder MLP
+        self.encoder = MLP(self.encoder_obs_dim, encoder_output_dim, encoder_hidden_dims, encoder_activation)
 
     def get_latent(
         self, obs: TensorDict, masks: torch.Tensor | None = None, hidden_state: HiddenState = None
