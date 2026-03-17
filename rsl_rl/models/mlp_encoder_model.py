@@ -80,6 +80,7 @@ class MLPEncoderModel(MLPModel):
             self.encoder_obs_normalizer = torch.nn.Identity()
         # encoder MLP
         self.encoder = MLP(self.encoder_obs_dim, encoder_output_dim, encoder_hidden_dims, encoder_activation)
+        self.encoder_output_dim = encoder_output_dim
         self.latent_encoder = None
 
     def get_latent(

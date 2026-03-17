@@ -71,7 +71,6 @@ class TCNAttentionModel(MLPModel):
         )
         # TODO: use hard-coded history proprioception key
         self.history_length = obs["encoder"].shape[1]
-        # self.history_length = history_length
         self.encoder_output_dim = encoder_output_dim
 
         # resolve encoder observation groups and dimension
