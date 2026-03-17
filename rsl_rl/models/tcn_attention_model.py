@@ -70,7 +70,7 @@ class TCNAttentionModel(MLPModel):
             distribution_cfg,
         )
         # TODO: use hard-coded history proprioception key
-        self.history_length = obs["history_proprioception"].shape[1]
+        self.history_length = obs["encoder"].shape[1]
         # self.history_length = history_length
         self.encoder_output_dim = encoder_output_dim
 
@@ -116,7 +116,7 @@ class TCNAttentionModel(MLPModel):
 
     def _get_latent_dim(self) -> int:
         """Return the latent dimensionality consumed by the MLP head."""
-        return self.latent_dim + self.encoder_output_dim * self.history_length
+        return self.obs_dim + self.encoder_output_dim * self.history_length
 
     def as_jit(self) -> nn.Module:
         """Return a version of the model compatible with Torch JIT export."""

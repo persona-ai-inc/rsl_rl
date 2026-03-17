@@ -104,7 +104,7 @@ class MLPEncoderModel(MLPModel):
 
     def _get_latent_dim(self) -> int:
         """Return the latent dimensionality consumed by the MLP head."""
-        return self.latent_dim + self.encoder_output_dim
+        return self.obs_dim + self.encoder_output_dim
 
     def as_jit(self) -> nn.Module:
         """Return a version of the model compatible with Torch JIT export."""
