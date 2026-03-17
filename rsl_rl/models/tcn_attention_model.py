@@ -24,7 +24,7 @@ class TCNAttentionModel(MLPModel):
     used to sample the outputs.
     """
 
-    is_recurrent: bool = True
+    is_recurrent: bool = False
     """Whether the model contains a recurrent module."""
 
     def __init__(
