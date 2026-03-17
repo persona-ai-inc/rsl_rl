@@ -37,9 +37,10 @@ class TCNAttentionModel(MLPModel):
         activation: str = "elu",
         obs_normalization: bool = False,
         distribution_cfg: dict | None = None,
-        encoder_obs_set: str = "encoder", 
-        encoder_output_dim: int = 0, 
+        encoder_obs_set: str = "encoder",
+        encoder_output_dim: int = 0,
         encoder_hidden_dims: tuple[int, ...] | list[int] = (256, 256, 256),
+        encoder_activation: str = "elu",
     ) -> None:
         """Initialize the RNN-based model.
 
@@ -47,15 +48,15 @@ class TCNAttentionModel(MLPModel):
             obs: Observation Dictionary.
             obs_groups: Dictionary mapping observation sets to lists of observation groups.
             obs_set: Observation set to use for this model (e.g., "actor" or "critic").
-            encoder_obs_set: Observation set to use for the encoder.
             output_dim: Dimension of the output.
-            encoder_output_dim: Dimension of the encoder output.
             hidden_dims: Hidden dimensions of the MLP.
-            encoder_hidden_dims: Hidden dimensions of the encoder.
             activation: Activation function of the MLP.
             obs_normalization: Whether to normalize the observations before feeding them to the MLP.
             distribution_cfg: Configuration dictionary for the output distribution.
-            history_length: Length of the history to use for the encoder.
+            encoder_obs_set: Observation set to use for the encoder.
+            encoder_output_dim: Dimension of the encoder output.
+            encoder_hidden_dims: Hidden dimensions of the encoder.
+            encoder_activation: Activation function of the encoder.
         """
         # Initialize the parent MLP model
         super().__init__(
@@ -86,7 +87,7 @@ class TCNAttentionModel(MLPModel):
             input_dim=self.encoder_obs_dim,
             output_dim=encoder_output_dim,
             hidden_dims=encoder_hidden_dims,
-            activation=activation,
+            activation=encoder_activation,
         )
         self.attention = SelfAttention(input_dim=encoder_output_dim)
 
@@ -108,7 +109,7 @@ class TCNAttentionModel(MLPModel):
         latent_policy = super().get_latent(obs)
 
         return torch.cat([latent_policy, latent_encoder], dim=-1)
-    
+
     def get_encoder_output(self) -> torch.Tensor | None:
         """Return the encoder output (``None`` for MLP)."""
         return self.latent_encoder
