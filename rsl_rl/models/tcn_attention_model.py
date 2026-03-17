@@ -58,20 +58,10 @@ class TCNAttentionModel(MLPModel):
             encoder_hidden_dims: Hidden dimensions of the encoder.
             encoder_activation: Activation function of the encoder.
         """
-        # Initialize the parent MLP model
-        super().__init__(
-            obs,
-            obs_groups,
-            obs_set,
-            output_dim,
-            hidden_dims,
-            activation,
-            obs_normalization,
-            distribution_cfg,
-        )
-        # TODO: use hard-coded history proprioception key
+        # NOTE: use hard-coded history proprioception key
         self.history_length = obs["encoder"].shape[1]
         self.encoder_output_dim = encoder_output_dim
+        self.latent_encoder = None
 
         # resolve encoder observation groups and dimension
         self.encoder_obs_groups, self.encoder_obs_dim = self._get_obs_dim(obs, obs_groups, encoder_obs_set)
@@ -90,7 +80,17 @@ class TCNAttentionModel(MLPModel):
         )
         self.attention = SelfAttention(input_dim=encoder_output_dim)
 
-        self.latent_encoder = None
+        # Initialize the parent MLP model
+        super().__init__(
+            obs,
+            obs_groups,
+            obs_set,
+            output_dim,
+            hidden_dims,
+            activation,
+            obs_normalization,
+            distribution_cfg,
+        )
 
     def get_latent(
         self, obs: TensorDict, masks: torch.Tensor | None = None, hidden_state: HiddenState = None
