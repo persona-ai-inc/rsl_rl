@@ -41,6 +41,7 @@ class MLPEncoderModel(MLPModel):
         encoder_output_dim: int = 0,
         encoder_hidden_dims: tuple[int, ...] | list[int] = (256, 256, 256),
         encoder_activation: str = "elu",
+        encoder_obs_normalization: bool = False,
         encoder_layer_normalization: bool = False,
     ) -> None:
         """Initialize the RNN-based model.
@@ -58,6 +59,7 @@ class MLPEncoderModel(MLPModel):
             encoder_output_dim: Dimension of the encoder output.
             encoder_hidden_dims: Hidden dimensions of the encoder.
             encoder_activation: Activation function of the encoder.
+            encoder_obs_normalization: Whether to normalize the observations before feeding them to the encoder.
             encoder_layer_normalization: Whether to apply layer normalization to the encoder output.
         """
         # instantiate variables
@@ -79,7 +81,7 @@ class MLPEncoderModel(MLPModel):
             distribution_cfg,
         )
 
-        if obs_normalization:
+        if encoder_obs_normalization:
             self.encoder_obs_normalizer = EmpiricalNormalization(self.encoder_obs_dim)
         else:
             self.encoder_obs_normalizer = torch.nn.Identity()
