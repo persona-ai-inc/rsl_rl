@@ -41,6 +41,7 @@ class MLPEncoderModel(MLPModel):
         encoder_output_dim: int = 0,
         encoder_hidden_dims: tuple[int, ...] | list[int] = (256, 256, 256),
         encoder_activation: str = "elu",
+        encoder_layer_normalization: bool = False,
     ) -> None:
         """Initialize the RNN-based model.
 
@@ -57,6 +58,7 @@ class MLPEncoderModel(MLPModel):
             encoder_output_dim: Dimension of the encoder output.
             encoder_hidden_dims: Hidden dimensions of the encoder.
             encoder_activation: Activation function of the encoder.
+            encoder_layer_normalization: Whether to apply layer normalization to the encoder output.
         """
         # instantiate variables
         self.encoder_output_dim = encoder_output_dim
@@ -83,7 +85,13 @@ class MLPEncoderModel(MLPModel):
             self.encoder_obs_normalizer = torch.nn.Identity()
 
         # encoder MLP
-        self.encoder = MLP(self.encoder_obs_dim, encoder_output_dim, encoder_hidden_dims, encoder_activation)
+        self.encoder = MLP(
+            input_dim=self.encoder_obs_dim,
+            output_dim=encoder_output_dim,
+            hidden_dims=encoder_hidden_dims,
+            activation=encoder_activation,
+            layer_normalization=encoder_layer_normalization,
+        )
 
     def get_latent(
         self, obs: TensorDict, masks: torch.Tensor | None = None, hidden_state: HiddenState = None
