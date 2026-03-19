@@ -96,6 +96,11 @@ class MLPEncoderModel(MLPModel):
         latent_encoder = self.encoder(latent_encoder)
         self.latent_encoder = latent_encoder
 
+        encoder_norm = torch.norm(self.latent_encoder.clone())
+        if encoder_norm > 1e3:
+            print("encoder output is too big")
+            print(self.latent_encoder)
+
         # Concatenate proprioceptive observation and normalize
         latent_policy = super().get_latent(obs)
 
