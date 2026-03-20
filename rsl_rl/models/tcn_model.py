@@ -64,8 +64,7 @@ class TCNModel(MLPModel):
             encoder_obs_normalization: Whether to normalize the observations before feeding them to the encoder.
         """
         # instantiate variables
-        # NOTE: use hard-coded history proprioception key
-        self.history_length = obs["encoder"].shape[1]
+        self.history_length = obs[encoder_obs_set].shape[1]
         self.encoder_output_dim = encoder_output_dim
         self.latent_encoder = None
 
