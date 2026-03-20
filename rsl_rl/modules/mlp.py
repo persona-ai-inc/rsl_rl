@@ -31,7 +31,6 @@ class MLP(nn.Sequential):
         hidden_dims: tuple[int, ...] | list[int],
         activation: str = "elu",
         last_activation: str | None = None,
-        layer_normalization: bool = False,
     ) -> None:
         """Initialize the MLP.
 
@@ -42,7 +41,6 @@ class MLP(nn.Sequential):
                 inferred from the input dimension.
             activation: Activation function.
             last_activation: Activation function of the last layer. None results in a linear last layer.
-            layer_normalization: Whether to apply layer normalization to the hidden layers.
         """
         super().__init__()
 
@@ -55,13 +53,9 @@ class MLP(nn.Sequential):
         # Create layers sequentially
         layers = []
         layers.append(nn.Linear(input_dim, hidden_dims_processed[0]))
-        if layer_normalization:
-            layers.append(nn.LayerNorm(hidden_dims_processed[0]))
         layers.append(activation_mod)
         for layer_index in range(len(hidden_dims_processed) - 1):
             layers.append(nn.Linear(hidden_dims_processed[layer_index], hidden_dims_processed[layer_index + 1]))
-            if layer_normalization:
-                layers.append(nn.LayerNorm(hidden_dims_processed[layer_index + 1]))
             layers.append(activation_mod)
 
         # Add last layer

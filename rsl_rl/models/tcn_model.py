@@ -12,10 +12,11 @@ import torch.nn as nn
 from tensordict import TensorDict
 
 from rsl_rl.models.mlp_model import MLPModel
-from rsl_rl.modules import TCN, EmpiricalNormalization, HiddenState, SelfAttention
+from rsl_rl.modules import TCN, EmpiricalNormalization, HiddenState
+from rsl_rl.utils import resolve_nn_activation
 
 
-class TCNAttentionModel(MLPModel):
+class TCNModel(MLPModel):
     """TCN-based encoder neural model.
 
     This model uses a temporal convolutional network (TCN) to process 1D observation groups before passing the resulting
@@ -95,7 +96,10 @@ class TCNAttentionModel(MLPModel):
             hidden_dims=encoder_hidden_dims,
             activation=encoder_activation,
         )
-        self.attention = SelfAttention(input_dim=encoder_output_dim)
+        self.fc = nn.Sequential(
+            nn.Linear(self.history_length * encoder_output_dim, encoder_output_dim),
+            resolve_nn_activation(encoder_activation),
+        )
 
     def get_latent(
         self, obs: TensorDict, masks: torch.Tensor | None = None, hidden_state: HiddenState = None
@@ -105,8 +109,8 @@ class TCNAttentionModel(MLPModel):
         obs_list = [obs[obs_group] for obs_group in self.encoder_obs_groups]
         latent_encoder = torch.cat(obs_list, dim=-1)
         latent_encoder = self.encoder_obs_normalizer(latent_encoder)
-        latent_encoder = self.tcn(latent_encoder)
-        latent_encoder = self.attention(latent_encoder).flatten(start_dim=1)
+        latent_encoder = self.tcn(latent_encoder).flatten(start_dim=1)
+        latent_encoder = self.fc(latent_encoder)
         self.latent_encoder = latent_encoder
 
         # Concatenate proprioceptive observation and normalize
@@ -120,29 +124,29 @@ class TCNAttentionModel(MLPModel):
 
     def _get_latent_dim(self) -> int:
         """Return the latent dimensionality consumed by the MLP head."""
-        return self.obs_dim + self.encoder_output_dim * self.history_length
+        return self.obs_dim + self.encoder_output_dim
 
     def as_jit(self) -> nn.Module:
         """Return a version of the model compatible with Torch JIT export."""
-        return _torchTCNAttentionModel(self)
+        return _torchTCNModel(self)
 
     def as_onnx(self, verbose: bool) -> nn.Module:
         """Return a version of the model compatible with ONNX export."""
-        return _OnnxTCNAttentionModel(self, verbose)
+        return _OnnxTCNModel(self, verbose)
 
 
-class _torchTCNAttentionModel(nn.Module):  # noqa: N801
+class _torchTCNModel(nn.Module):  # noqa: N801
     """Exportable TCN+Attention encoder model for JIT."""
 
-    def __init__(self, model: TCNAttentionModel) -> None:
-        """Create a TorchScript-friendly copy of a TCNAttentionModel."""
+    def __init__(self, model: TCNModel) -> None:
+        """Create a TorchScript-friendly copy of a TCNModel."""
         super().__init__()
         # Policy-obs branch (from parent MLPModel)
         self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
-        # Encoder branch: normalizer → TCN → SelfAttention → flatten
+        # Encoder branch: normalizer → TCN → fc
         self.encoder_obs_normalizer = copy.deepcopy(model.encoder_obs_normalizer)
         self.tcn = copy.deepcopy(model.tcn)
-        self.attention = copy.deepcopy(model.attention)
+        self.fc = copy.deepcopy(model.fc)
         # Shared MLP head
         self.mlp = copy.deepcopy(model.mlp)
         if model.distribution is not None:
@@ -163,11 +167,11 @@ class _torchTCNAttentionModel(nn.Module):  # noqa: N801
         """
         # Policy latent: [batch, obs_dim]
         latent_policy = self.obs_normalizer(obs)
-        # Encoder latent: normalize → TCN → attention → flatten
+        # Encoder latent: normalize → TCN → fc
         latent_encoder = self.encoder_obs_normalizer(encoder_obs)  # [batch, L, enc_obs_dim]
         latent_encoder = self.tcn(latent_encoder)  # [batch, L, enc_out_dim]
-        latent_encoder = self.attention(latent_encoder)  # [batch, L, enc_out_dim]
         latent_encoder = latent_encoder.flatten(start_dim=1)  # [batch, L * enc_out_dim]
+        latent_encoder = self.fc(latent_encoder)
         # Concatenate and run MLP head
         latent = torch.cat([latent_policy, latent_encoder], dim=-1)
         out = self.mlp(latent)
@@ -179,22 +183,22 @@ class _torchTCNAttentionModel(nn.Module):  # noqa: N801
         pass
 
 
-class _OnnxTCNAttentionModel(nn.Module):
+class _OnnxTCNModel(nn.Module):
     """Exportable TCN+Attention encoder model for ONNX."""
 
     is_recurrent: bool = False
 
-    def __init__(self, model: TCNAttentionModel, verbose: bool) -> None:
-        """Create an ONNX-export wrapper around a TCNAttentionModel."""
+    def __init__(self, model: TCNModel, verbose: bool) -> None:
+        """Create an ONNX-export wrapper around a TCNModel."""
         super().__init__()
         self.verbose = verbose
         # Policy-obs branch (from parent MLPModel)
         self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
         self.obs_input_size = model.obs_dim
-        # Encoder branch: normalizer → TCN → SelfAttention → flatten
+        # Encoder branch: normalizer → TCN → fc
         self.encoder_obs_normalizer = copy.deepcopy(model.encoder_obs_normalizer)
         self.tcn = copy.deepcopy(model.tcn)
-        self.attention = copy.deepcopy(model.attention)
+        self.fc = copy.deepcopy(model.fc)
         self.history_length = model.history_length
         self.encoder_obs_dim = model.encoder_obs_dim
         # Shared MLP head
@@ -217,11 +221,11 @@ class _OnnxTCNAttentionModel(nn.Module):
         """
         # Policy latent: [batch, obs_dim]
         latent_policy = self.obs_normalizer(obs)
-        # Encoder latent: normalize → TCN → attention → flatten
+        # Encoder latent: normalize → TCN → fc
         latent_encoder = self.encoder_obs_normalizer(encoder_obs)  # [batch, L, enc_obs_dim]
         latent_encoder = self.tcn(latent_encoder)  # [batch, L, enc_out_dim]
-        latent_encoder = self.attention(latent_encoder)  # [batch, L, enc_out_dim]
         latent_encoder = latent_encoder.flatten(start_dim=1)  # [batch, L * enc_out_dim]
+        latent_encoder = self.fc(latent_encoder)
         # Concatenate and run MLP head
         latent = torch.cat([latent_policy, latent_encoder], dim=-1)
         out = self.mlp(latent)

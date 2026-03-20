@@ -10,6 +10,7 @@ from .mlp_encoder_model import MLPEncoderModel
 from .mlp_model import MLPModel
 from .rnn_model import RNNModel
 from .tcn_attention_model import TCNAttentionModel
+from .tcn_model import TCNModel
 
 __all__ = [
     "CNNModel",
@@ -17,4 +18,5 @@ __all__ = [
     "MLPModel",
     "RNNModel",
     "TCNAttentionModel",
+    "TCNModel",
 ]

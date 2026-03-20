@@ -26,6 +26,8 @@ class MLPModel(nn.Module):
 
     is_recurrent: bool = False
     """Whether the model contains a recurrent module."""
+    has_encoder: bool = False
+    """Whether the model contains an encoder."""
 
     def __init__(
         self,

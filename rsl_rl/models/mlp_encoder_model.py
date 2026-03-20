@@ -13,6 +13,7 @@ from tensordict import TensorDict
 
 from rsl_rl.models.mlp_model import MLPModel
 from rsl_rl.modules import MLP, EmpiricalNormalization, HiddenState
+from rsl_rl.utils import unpad_trajectories
 
 
 class MLPEncoderModel(MLPModel):
@@ -26,6 +27,8 @@ class MLPEncoderModel(MLPModel):
 
     is_recurrent: bool = False
     """Whether the model contains a recurrent module."""
+    has_encoder: bool = True
+    """Whether the model contains an encoder."""
 
     def __init__(
         self,
@@ -42,7 +45,6 @@ class MLPEncoderModel(MLPModel):
         encoder_hidden_dims: tuple[int, ...] | list[int] = (256, 256, 256),
         encoder_activation: str = "elu",
         encoder_obs_normalization: bool = False,
-        encoder_layer_normalization: bool = False,
     ) -> None:
         """Initialize the RNN-based model.
 
@@ -60,7 +62,6 @@ class MLPEncoderModel(MLPModel):
             encoder_hidden_dims: Hidden dimensions of the encoder.
             encoder_activation: Activation function of the encoder.
             encoder_obs_normalization: Whether to normalize the observations before feeding them to the encoder.
-            encoder_layer_normalization: Whether to apply layer normalization to the encoder output.
         """
         # instantiate variables
         self.encoder_output_dim = encoder_output_dim
@@ -92,8 +93,37 @@ class MLPEncoderModel(MLPModel):
             output_dim=encoder_output_dim,
             hidden_dims=encoder_hidden_dims,
             activation=encoder_activation,
-            layer_normalization=encoder_layer_normalization,
         )
+
+    def forward_encoder(
+        self,
+        obs: TensorDict,
+        encoder_state: torch.Tensor | None = None,
+        masks: torch.Tensor | None = None,
+        hidden_state: HiddenState = None,
+        stochastic_output: bool = False,
+    ) -> torch.Tensor:
+        """Forward pass of the MLP model.
+
+        ..note::
+            The `stochastic_output` flag only has an effect if the model has a distribution (i.e., ``distribution_cfg``
+            was provided) and defaults to ``False``, meaning that even stochastic models will return deterministic
+            outputs by default.
+        """
+        # If observations are padded for recurrent training but the model is non-recurrent, unpad the observations
+        obs = unpad_trajectories(obs, masks) if masks is not None and not self.is_recurrent else obs
+        # Get MLP input latent
+        obs_latent = super().get_latent(obs, masks, hidden_state)
+        latent = torch.cat([obs_latent, encoder_state], dim=-1) if encoder_state is not None else obs_latent
+        # MLP forward pass
+        mlp_output = self.mlp(latent)
+        # If stochastic output is requested, update the distribution and sample from it, otherwise return MLP output
+        if self.distribution is not None:
+            if stochastic_output:
+                self.distribution.update(mlp_output)
+                return self.distribution.sample()
+            return self.distribution.deterministic_output(mlp_output)
+        return mlp_output
 
     def get_latent(
         self, obs: TensorDict, masks: torch.Tensor | None = None, hidden_state: HiddenState = None
@@ -116,7 +146,7 @@ class MLPEncoderModel(MLPModel):
 
         return torch.cat([latent_policy, latent_encoder], dim=-1)
 
-    def get_encoder_output(self) -> torch.Tensor | None:
+    def get_encoder_state(self) -> torch.Tensor | None:
         """Return the encoder output (``None`` for MLP)."""
         return self.latent_encoder
 
