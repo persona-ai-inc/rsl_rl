@@ -146,7 +146,8 @@ class PPO:
         self.transition.actions_log_prob = self.actor.get_output_log_prob(self.transition.actions).detach()  # type: ignore
         self.transition.distribution_params = tuple(p.detach() for p in self.actor.output_distribution_params)
         # Compute latent
-        self.transition.encoder_state = self.actor.get_encoder_state().detach()
+        encoder_state = self.actor.get_encoder_state()
+        self.transition.encoder_state = encoder_state.detach() if encoder_state is not None else None
         # Record observations before env.step()
         self.transition.observations = obs
         return self.transition.actions  # type: ignore

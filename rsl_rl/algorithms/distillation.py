@@ -92,8 +92,10 @@ class Distillation:
         # Compute the actions
         self.transition.actions = self.student(obs, stochastic_output=True).detach()
         self.transition.privileged_actions = self.teacher(obs).detach()
-        self.transition.encoder_state = self.student.get_encoder_state()
-        self.transition.privileged_encoder_state = self.teacher.get_encoder_state()
+        encoder_state = self.student.get_encoder_state()
+        self.transition.encoder_state = encoder_state.detach() if encoder_state is not None else None
+        encoder_state = self.teacher.get_encoder_state()
+        self.transition.privileged_encoder_state = encoder_state.detach() if encoder_state is not None else None
         # Record the observations
         self.transition.observations = obs
         return self.transition.actions  # type: ignore
