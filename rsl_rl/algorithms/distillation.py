@@ -124,6 +124,7 @@ class Distillation:
         """Run optimization epochs over stored batches and return mean losses."""
         self.num_updates += 1
         mean_behavior_loss = 0
+        mean_encoder_reconstruction_loss = 0
         loss = 0
         cnt = 0
 
@@ -137,13 +138,15 @@ class Distillation:
 
                 # Behavior cloning loss
                 behavior_loss = self.loss_fn(actions, batch.privileged_actions)
+                encoder_reconstruction_loss = 0
                 if batch.encoder_state is not None and batch.privileged_encoder_state is not None:
                     encoder_state = self.student.get_encoder_state()
-                    behavior_loss += self.loss_fn(encoder_state, batch.privileged_encoder_state)
+                    encoder_reconstruction_loss = self.loss_fn(encoder_state, batch.privileged_encoder_state)
 
                 # Total loss
-                loss = loss + behavior_loss
+                loss = loss + behavior_loss + encoder_reconstruction_loss
                 mean_behavior_loss += behavior_loss.item()
+                mean_encoder_reconstruction_loss += encoder_reconstruction_loss.item()
                 cnt += 1
 
                 # Gradient step
@@ -164,12 +167,13 @@ class Distillation:
                 self.student.detach_hidden_state(batch.dones.view(-1))
 
         mean_behavior_loss /= cnt
+        mean_encoder_reconstruction_loss /= cnt
         self.storage.clear()
         self.last_hidden_states = (self.student.get_hidden_state(), self.teacher.get_hidden_state())
         self.student.detach_hidden_state()
 
         # Construct the loss dictionary
-        loss_dict = {"behavior": mean_behavior_loss}
+        loss_dict = {"behavior": mean_behavior_loss, "encoder_reconstruction": mean_encoder_reconstruction_loss}
 
         return loss_dict
 

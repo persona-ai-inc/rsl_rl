@@ -36,7 +36,7 @@ class CausalConv1dBlock(nn.Module):
         self.padding = (kernel_size - 1) * dilation  # causal padding
         self.conv = nn.Conv1d(in_dim, out_dim, kernel_size, dilation=dilation, padding=self.padding)
         self.norm = nn.LayerNorm(out_dim)
-        self.activation = activation()
+        self.activation = activation
 
         # residual projection if dims differ
         self.residual_proj = nn.Linear(in_dim, out_dim) if in_dim != out_dim else nn.Identity()

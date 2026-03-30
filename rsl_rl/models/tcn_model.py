@@ -64,12 +64,12 @@ class TCNModel(MLPModel):
             encoder_obs_normalization: Whether to normalize the observations before feeding them to the encoder.
         """
         # instantiate variables
-        self.history_length = obs[encoder_obs_set].shape[1]
+        self.history_length = obs[encoder_obs_set].shape[1]  # history obs is in [batch, history_length, obs_dim]
         self.encoder_output_dim = encoder_output_dim
         self.latent_encoder = None
 
         # resolve encoder observation groups and dimension
-        self.encoder_obs_groups, self.encoder_obs_dim = self._get_obs_dim(obs, obs_groups, encoder_obs_set)
+        self.encoder_obs_groups, self.encoder_obs_dim = self._get_history_obs_dim(obs, obs_groups, encoder_obs_set)
 
         # Initialize the parent MLP model
         super().__init__(
@@ -120,6 +120,20 @@ class TCNModel(MLPModel):
     def get_encoder_state(self) -> torch.Tensor | None:
         """Return the encoder output (``None`` for MLP)."""
         return self.latent_encoder
+
+    def _get_history_obs_dim(
+        self, obs: TensorDict, obs_groups: dict[str, list[str]], obs_set: str
+    ) -> tuple[list[str], int]:
+        """Select active observation groups and compute observation dimension."""
+        active_obs_groups = obs_groups[obs_set]
+        obs_dim = 0
+        for obs_group in active_obs_groups:
+            if len(obs[obs_group].shape) != 3:
+                raise ValueError(
+                    f"The TCN model only supports 3D observations (history), got shape {obs[obs_group].shape} for '{obs_group}'."
+                )
+            obs_dim += obs[obs_group].shape[-1]
+        return active_obs_groups, obs_dim
 
     def _get_latent_dim(self) -> int:
         """Return the latent dimensionality consumed by the MLP head."""

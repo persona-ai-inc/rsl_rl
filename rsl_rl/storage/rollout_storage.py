@@ -250,9 +250,9 @@ class RolloutStorage:
                 privileged_actions=self.privileged_actions[i],
                 dones=self.dones[i],
                 privileged_encoder_state=(
-                    self.privileged_encoder_state[i] if self.privileged_encoder_state is not None else None
+                    self.privileged_encoder_state[i].clone() if self.privileged_encoder_state is not None else None
                 ),
-                encoder_state=self.encoder_state[i] if self.encoder_state is not None else None,
+                encoder_state=self.encoder_state[i].clone() if self.encoder_state is not None else None,
             )
 
     # For reinforcement learning with feedforward networks
