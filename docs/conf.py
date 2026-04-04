@@ -62,4 +62,5 @@ autodoc_mock_imports = [
     "onnxruntime",
     "wandb",
     "neptune",
+    "git",
 ]
