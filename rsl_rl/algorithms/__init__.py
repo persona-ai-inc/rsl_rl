@@ -7,5 +7,6 @@
 
 from .distillation import Distillation
 from .ppo import PPO
+from .ppo_encoder_decoder import PPOEncoderDecoder
 
-__all__ = ["PPO", "Distillation"]
+__all__ = ["PPO", "Distillation", "PPOEncoderDecoder"]
