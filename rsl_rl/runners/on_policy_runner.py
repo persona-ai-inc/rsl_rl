@@ -57,6 +57,11 @@ class OnPolicyRunner:
             device=self.device,
         )
 
+        # Create the model directory
+        self.model_dir = os.path.join(log_dir, "models") if log_dir is not None else None
+        if self.model_dir is not None and not os.path.exists(self.model_dir):
+            os.makedirs(self.model_dir, exist_ok=True)
+
         self.current_learning_iteration = 0
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
@@ -125,11 +130,11 @@ class OnPolicyRunner:
 
             # Save model
             if it % self.cfg["save_interval"] == 0:
-                self.save(os.path.join(self.logger.log_dir, f"model_{it}.pt"))  # type: ignore
+                self.save(os.path.join(self.model_dir, f"model_{it:0{len(str(total_it))}}.pt"))  # type: ignore
 
         # Save the final model after training
         if self.logger.log_dir is not None and not self.logger.disable_logs:
-            self.save(os.path.join(self.logger.log_dir, f"model_{self.current_learning_iteration}.pt"))
+            self.save(os.path.join(self.model_dir, f"model_{self.current_learning_iteration:0{len(str(total_it))}}.pt"))
 
     def save(self, path: str, infos: dict | None = None) -> None:
         # Save model

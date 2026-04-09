@@ -182,6 +182,12 @@ class Logger:
             log_string = f"""{"#" * width}\n"""
             log_string += f"""\033[1m{f" Learning iteration {it}/{total_it} ".center(width)}\033[0m \n\n"""
 
+            # Upload video to wandb
+            if self.logger_type == "wandb" and not self.disable_logs:
+                # use video_fps from cfg if available or default to 30
+                video_fps = self.cfg.get("video_fps", 30)
+                self.writer.add_video_files(self.log_dir, fps=video_fps, step=it)
+
             # Print run name if provided
             run_name = self.cfg.get("run_name")
             log_string += f"""{"Run name:":>{pad}} {run_name}\n""" if run_name else ""

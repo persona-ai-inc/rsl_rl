@@ -30,13 +30,16 @@ class WandbSummaryWriter(SummaryWriter):
         except KeyError:
             raise KeyError("Please specify wandb_project in the runner config, e.g. legged_gym.") from None
         try:
-            entity = os.environ["WANDB_USERNAME"]
+            entity = cfg["wandb_entity"]
+            # * this is old implementation that just assumes you want your username as the entity
+            # entity = os.environ["WANDB_USERNAME"]
         except KeyError:
             entity = None
 
         # Initialize wandb
         wandb.init(project=project, entity=entity, name=run_name)
         wandb.config.update({"log_dir": log_dir})
+        self.video_files = []
 
     def store_config(self, env_cfg: dict | object, train_cfg: dict) -> None:
         wandb.config.update({"runner_cfg": train_cfg})
@@ -72,3 +75,15 @@ class WandbSummaryWriter(SummaryWriter):
 
     def save_file(self, path: str) -> None:
         wandb.save(path, base_path=os.path.dirname(path))
+
+    def add_video_files(self, log_dir: str, step: int, fps: int = 30) -> None:
+        # Check if there are video files in the video directory
+        if os.path.exists(log_dir):
+            # append the new video files to the existing list
+            for root, dirs, files in os.walk(log_dir):
+                for video_file in files:
+                    if video_file.endswith(".mp4") and video_file not in self.video_files:
+                        self.video_files.append(video_file)
+                        # add the new video file to wandb only if video file is not updating
+                        video_path = os.path.join(root, video_file)
+                        wandb.log({"Video": wandb.Video(video_path, fps=fps, format="mp4")}, step=step)
