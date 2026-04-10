@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.optim as optim
 from itertools import chain
 from tensordict import TensorDict
+import inspect
 
 from rsl_rl.modules import ActorCritic, ActorCriticCNN, ActorCriticRecurrent
 from rsl_rl.modules.rnd import RandomNetworkDistillation
@@ -83,6 +84,10 @@ class PPO:
             # If function is a string then resolve it to a function
             if isinstance(symmetry_cfg["data_augmentation_func"], str):
                 symmetry_cfg["data_augmentation_func"] = string_to_callable(symmetry_cfg["data_augmentation_func"])
+                if inspect.isclass(symmetry_cfg["data_augmentation_func"]):
+                    # build the object
+                    print("Building mirror symmetry object")
+                    symmetry_cfg["data_augmentation_func"] = symmetry_cfg["data_augmentation_func"]()
             # Check valid configuration
             if not callable(symmetry_cfg["data_augmentation_func"]):
                 raise ValueError(
