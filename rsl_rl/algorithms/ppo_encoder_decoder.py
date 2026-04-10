@@ -326,12 +326,6 @@ class PPOEncoderDecoder(PPO):
             else:
                 decoder_loss = torch.zeros((), device=self.device)
 
-            # --- debug ---
-            print(f"decoder_output : mean={decoder_output.abs().mean():.4f}  std={decoder_output.std():.4f}")
-            print(f"enc_obs_target : mean={encoder_obs_target.abs().mean():.4f}  std={encoder_obs_target.std():.4f}")
-            print(f"decoder_loss   : {decoder_loss.item():.6f}")
-            # ----------
-
             # Compute the gradients for PPO
             self.optimizer.zero_grad()
             loss.backward()
@@ -339,13 +333,6 @@ class PPOEncoderDecoder(PPO):
             if self.rnd:
                 self.rnd_optimizer.zero_grad()
                 rnd_loss.backward()
-
-            # --- debug ---
-            enc_grad = next(self.actor.encoder.parameters()).grad
-            dec_grad = next(self.actor.decoder.parameters()).grad
-            print(f"encoder grad norm: {enc_grad.norm():.6f}" if enc_grad is not None else "encoder grad: NONE ❌")
-            print(f"decoder grad norm: {dec_grad.norm():.6f}" if dec_grad is not None else "decoder grad: NONE ❌")
-            # ----------
 
             # Collect gradients from all GPUs
             if self.is_multi_gpu:

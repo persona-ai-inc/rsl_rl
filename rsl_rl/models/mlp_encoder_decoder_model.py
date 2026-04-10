@@ -135,3 +135,7 @@ class MLPEncoderDecoderModel(MLPEncoderModel):
     def get_decoder_output(self) -> torch.Tensor | None:
         """Return the most recent decoder reconstruction (``None`` before the first forward pass)."""
         return self.decoder_output
+
+    def get_decoder_inference(self, latent_encoder: torch.Tensor) -> torch.Tensor:
+        """Return the decoder reconstruction."""
+        return self.decoder(latent_encoder)
