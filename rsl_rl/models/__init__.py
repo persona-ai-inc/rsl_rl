@@ -6,18 +6,20 @@
 """Neural models for the learning algorithm."""
 
 from .cnn_model import CNNModel
-from .mlp_encoder_decoder_model import MLPEncoderDecoderModel
+from .mlp_ae_model import MLPAutoEncoderModel
 from .mlp_encoder_model import MLPEncoderModel
 from .mlp_model import MLPModel
+from .mlp_vae_model import MLPVAEModel
 from .rnn_model import RNNModel
 from .tcn_attention_model import TCNAttentionModel
 from .tcn_model import TCNModel
 
 __all__ = [
     "CNNModel",
-    "MLPEncoderDecoderModel",
+    "MLPAutoEncoderModel",
     "MLPEncoderModel",
     "MLPModel",
+    "MLPVAEModel",
     "RNNModel",
     "TCNAttentionModel",
     "TCNModel",

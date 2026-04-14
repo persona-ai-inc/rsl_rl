@@ -14,7 +14,7 @@ from rsl_rl.modules import HiddenState, MLP
 from rsl_rl.utils import unpad_trajectories
 
 
-class MLPEncoderDecoderModel(MLPEncoderModel):
+class MLPAutoEncoderModel(MLPEncoderModel):
     """MLP-based encoder-decoder neural model.
 
     Extends :class:`MLPEncoderModel` with a symmetric decoder that reconstructs the encoder
@@ -51,6 +51,7 @@ class MLPEncoderDecoderModel(MLPEncoderModel):
         encoder_hidden_dims: tuple[int, ...] | list[int] = (256, 256, 256),
         encoder_activation: str = "elu",
         encoder_obs_normalization: bool = False,
+        decoder_obs_set: str = "decoder",
     ) -> None:
         """Initialize the MLP encoder-decoder model.
 
@@ -69,7 +70,11 @@ class MLPEncoderDecoderModel(MLPEncoderModel):
                 reversed, i.e. ``encoder_hidden_dims[::-1]``.
             encoder_activation: Activation function for both encoder and decoder MLPs.
             encoder_obs_normalization: Whether to normalize the encoder observations.
+            decoder_obs_set: Observation set to use for the decoder.
         """
+        # resolve decoder observation groups and dimension
+        self.decoder_obs_groups, self.decoder_obs_dim = self._get_obs_dim(obs, obs_groups, decoder_obs_set)
+
         # Initialize parent (builds encoder + policy MLP)
         super().__init__(
             obs,
@@ -90,7 +95,7 @@ class MLPEncoderDecoderModel(MLPEncoderModel):
         # Decoder: mirror of encoder — reversed hidden dims, outputs encoder_obs_dim
         self.decoder = MLP(
             input_dim=encoder_output_dim,
-            output_dim=self.encoder_obs_dim,
+            output_dim=self.decoder_obs_dim,
             hidden_dims=list(encoder_hidden_dims)[::-1],
             activation=encoder_activation,
         )

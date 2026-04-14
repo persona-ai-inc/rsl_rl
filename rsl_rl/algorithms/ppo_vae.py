@@ -10,37 +10,47 @@ import torch
 import torch.nn as nn
 from tensordict import TensorDict
 
-from rsl_rl.algorithms.ppo import PPO
+from rsl_rl.algorithms.ppo_ae import PPOAE
 from rsl_rl.env import VecEnv
 from rsl_rl.models import MLPModel
 from rsl_rl.storage import RolloutStorage
-from rsl_rl.utils import resolve_callable, resolve_obs_groups
 
 
-class PPOEncoderDecoder(PPO):
-    r"""PPO with an auxiliary decoder reconstruction loss.
+class PPOVAE(PPOAE):
+    r"""PPO with a beta-VAE structured latent regularization.
 
-    Extends :class:`PPO` by adding a supervised reconstruction objective for actors that have a
-    decoder (``actor.has_decoder is True``). After the standard PPO update the decoder is trained
-    to reconstruct the encoder observations from the encoder bottleneck latent.
-
-    The decoder loss is computed as:
+    Extends :class:`PPOAE` by adding the KL divergence between the
+    encoder posterior :math:`q(z \mid x)` and the isotropic Gaussian prior
+    :math:`\mathcal{N}(0, I)` to the training objective:
 
     .. math::
 
-        \\mathcal{L}_{\\text{dec}} = \\text{loss\\_fn}(\\hat{o}_{\\text{enc}}, o_{\\text{enc}})
+        \mathcal{L} = \mathcal{L}_{\text{PPO}}
+                    + \lambda_{\text{dec}} \, \mathcal{L}_{\text{recon}}
+                    + \lambda_{\text{KL}} \, \mathcal{L}_{\text{KL}}
 
-    where :math:`\\hat{o}_{\\text{enc}}` is the decoder output and :math:`o_{\\text{enc}}` is the
-    original (normalised or raw) encoder observation used as the reconstruction target.
+    where
 
-    The decoder loss is **added to the PPO loss** so that a single ``optimizer.step()`` updates
-    both the encoder/decoder and the policy MLP jointly. A separate coefficient
-    ``decoder_loss_coef`` scales its contribution.
+    .. math::
+
+        \mathcal{L}_{\text{KL}}
+            = \frac{1}{d_z} \sum_{i=1}^{d_z}
+              \max\!\Bigl(
+                  \tau,\;
+                  -\tfrac{1}{2}(1 + \log\sigma_i^2 - \mu_i^2 - \sigma_i^2)
+              \Bigr)
+
+    The optional *free-nats* threshold :math:`\tau` (``kl_free_nats``) prevents
+    posterior collapse for small latent dimensions by only penalising KL above
+    the tolerance.
 
     Note:
-        This class is only meaningful when the actor is an :class:`~rsl_rl.models.MLPEncoderDecoderModel`
-        (or any model with ``has_decoder = True`` and a ``get_decoder_output()`` method).
-        If the actor has no decoder, the class behaves identically to :class:`PPO`.
+        This class is designed for use with :class:`~rsl_rl.models.MLPVAEModel`
+        (or any actor with ``has_decoder = True``, a ``get_decoder_output()``
+        method, and a ``get_vae_params()`` method returning ``(mu, log_var)``).
+        If the actor has no decoder, an error is raised. If it has a decoder but
+        no ``get_vae_params()``, the class falls back to plain
+        :class:`PPOAE` behaviour (no KL term).
     """
 
     def __init__(
@@ -72,11 +82,14 @@ class PPOEncoderDecoder(PPO):
         # Decoder parameters
         decoder_loss_coef: float = 1.0,
         loss_type: str = "mse",
+        # VAE parameters
+        kl_loss_coef: float = 1.0,
+        kl_free_nats: float = 0.0,
     ) -> None:
-        """Initialize PPOEncoderDecoder.
+        """Initialize PPOVAE.
 
         Args:
-            actor: Actor model (should be an :class:`~rsl_rl.models.MLPEncoderDecoderModel`).
+            actor: Actor model (should be :class:`~rsl_rl.models.MLPVAEModel`).
             critic: Critic model.
             storage: Rollout storage.
             num_learning_epochs: Number of PPO learning epochs per update.
@@ -98,7 +111,10 @@ class PPOEncoderDecoder(PPO):
             symmetry_cfg: Optional symmetry augmentation configuration dict.
             multi_gpu_cfg: Optional multi-GPU configuration dict.
             decoder_loss_coef: Coefficient for the decoder reconstruction loss.
-            loss_type: Type of regression loss for the decoder. Supported: ``"mse"``, ``"huber"``.
+            loss_type: Regression loss type for decoder. Supported: ``"mse"``, ``"huber"``.
+            kl_loss_coef: Coefficient for the VAE KL loss.
+            kl_free_nats: Free-nats tolerance. Only KL per dimension above
+                this threshold is penalised. Set to ``0.0`` to disable (standard VAE).
         """
         super().__init__(
             actor=actor,
@@ -122,28 +138,22 @@ class PPOEncoderDecoder(PPO):
             rnd_cfg=rnd_cfg,
             symmetry_cfg=symmetry_cfg,
             multi_gpu_cfg=multi_gpu_cfg,
+            decoder_loss_coef=decoder_loss_coef,
+            loss_type=loss_type,
         )
 
-        self.decoder_loss_coef = decoder_loss_coef
-
-        # Resolve loss function (same pattern as Distillation)
-        loss_fn_dict = {
-            "mse": nn.functional.mse_loss,
-            "huber": nn.functional.huber_loss,
-        }
-        if loss_type not in loss_fn_dict:
-            raise ValueError(f"Unknown loss type: {loss_type}. Supported types are: {list(loss_fn_dict.keys())}")
-        self.loss_fn = loss_fn_dict[loss_type]
+        self.kl_loss_coef = kl_loss_coef
+        self.kl_free_nats = kl_free_nats
 
     def update(self) -> dict[str, float]:
-        """Run PPO update epochs and add decoder reconstruction loss.
+        """Run PPO update epochs and add decoder reconstruction and KL losses.
 
-        The decoder loss is computed as the regression error between the actor's decoder output
-        and the original (concatenated) encoder observations used as reconstruction targets.
-        It is accumulated alongside the standard PPO losses and returned in the loss dict.
+        Extends :meth:`PPOEncoderDecoder.update` by computing the per-dimension KL
+        divergence from the VAE encoder and adding it (optionally with a free-nats
+        threshold) to the combined loss.
 
         Returns:
-            Dict with all PPO loss keys plus ``"decoder"`` if the actor has a decoder.
+            Dict with all PPO loss keys plus ``"decoder"`` and ``"kl"``.
         """
         if not getattr(self.actor, "has_decoder", False):
             raise RuntimeError("Actor has no decoder")
@@ -151,11 +161,9 @@ class PPOEncoderDecoder(PPO):
         mean_value_loss = 0.0
         mean_surrogate_loss = 0.0
         mean_entropy = 0.0
-        # Decoder loss
         mean_decoder_loss = 0.0
-        # RND loss
+        mean_kl_loss = 0.0
         mean_rnd_loss = 0.0 if self.rnd else None
-        # Symmetry loss
         mean_symmetry_loss = 0.0 if self.symmetry else None
 
         if self.actor.is_recurrent or self.critic.is_recurrent:
@@ -163,35 +171,28 @@ class PPOEncoderDecoder(PPO):
         else:
             generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
 
-        # Iterate over batches
         for batch in generator:
             original_batch_size = batch.observations.batch_size[0]
 
-            # Check if we should normalize advantages per mini batch
             if self.normalize_advantage_per_mini_batch:
                 with torch.no_grad():
                     batch.advantages = (batch.advantages - batch.advantages.mean()) / (batch.advantages.std() + 1e-8)  # type: ignore
 
-            # Perform symmetric augmentation
+            # Symmetric augmentation
             if self.symmetry and self.symmetry["use_data_augmentation"]:
-                # Augmentation using symmetry
                 data_augmentation_func = self.symmetry["data_augmentation_func"]
-                # Returned shape: [batch_size * num_aug, ...]
                 batch.observations, batch.actions = data_augmentation_func(
                     env=self.symmetry["_env"],
                     obs=batch.observations,
                     actions=batch.actions,
                 )
-                # Compute number of augmentations per sample
                 num_aug = int(batch.observations.batch_size[0] / original_batch_size)
-                # Repeat the rest of the batch
                 batch.old_actions_log_prob = batch.old_actions_log_prob.repeat(num_aug, 1)
                 batch.values = batch.values.repeat(num_aug, 1)
                 batch.advantages = batch.advantages.repeat(num_aug, 1)
                 batch.returns = batch.returns.repeat(num_aug, 1)
 
-            # Recompute actions log prob and entropy for current batch of transitions
-            # Note: We need to do this because we updated the policy with the new parameters
+            # Forward pass — also re-runs encoder and decoder for aux losses
             if self.actor.has_encoder and hasattr(self.actor, "forward_encoder"):
                 self.actor.forward_encoder(
                     batch.observations,
@@ -210,35 +211,30 @@ class PPOEncoderDecoder(PPO):
 
             actions_log_prob = self.actor.get_output_log_prob(batch.actions)  # type: ignore
             values = self.critic(batch.observations, masks=batch.masks, hidden_state=batch.hidden_states[1])
-            # Note: We only keep the distribution parameters and entropy of the first augmentation (the original one)
             distribution_params = tuple(p[:original_batch_size] for p in self.actor.output_distribution_params)
             entropy = self.actor.output_entropy[:original_batch_size]
 
-            # Compute KL divergence and adapt the learning rate
+            # Adaptive learning rate
             if self.desired_kl is not None and self.schedule == "adaptive":
                 with torch.inference_mode():
                     kl = self.actor.get_kl_divergence(batch.old_distribution_params, distribution_params)  # type: ignore
                     kl_mean = torch.mean(kl)
 
-                    # Reduce the KL divergence across all GPUs
                     if self.is_multi_gpu:
                         torch.distributed.all_reduce(kl_mean, op=torch.distributed.ReduceOp.SUM)
                         kl_mean /= self.gpu_world_size
 
-                    # Update the learning rate only on the main process
                     if self.gpu_global_rank == 0:
                         if kl_mean > self.desired_kl * 2.0:
                             self.learning_rate = max(1e-5, self.learning_rate / 1.5)
                         elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
                             self.learning_rate = min(1e-2, self.learning_rate * 1.5)
 
-                    # Update the learning rate for all GPUs
                     if self.is_multi_gpu:
                         lr_tensor = torch.tensor(self.learning_rate, device=self.device)
                         torch.distributed.broadcast(lr_tensor, src=0)
                         self.learning_rate = lr_tensor.item()
 
-                    # Update the learning rate for all parameter groups
                     for param_group in self.optimizer.param_groups:
                         param_group["lr"] = self.learning_rate
 
@@ -263,33 +259,23 @@ class PPOEncoderDecoder(PPO):
 
             # Symmetry loss
             if self.symmetry:
-                # Obtain the symmetric actions
-                # Note: If we did augmentation before then we don't need to augment again
                 if not self.symmetry["use_data_augmentation"]:
                     data_augmentation_func = self.symmetry["data_augmentation_func"]
                     batch.observations, _ = data_augmentation_func(
                         obs=batch.observations, actions=None, env=self.symmetry["_env"]
                     )
 
-                # Actions predicted by the actor for symmetrically-augmented observations
                 mean_actions = self.actor(batch.observations.detach().clone())
-
-                # Compute the symmetrically augmented actions
-                # Note: We are assuming the first augmentation is the original one. We do not use the batch.actions from
-                # earlier since that action was sampled from the distribution. However, the symmetry loss is computed
-                # using the mean of the distribution.
                 action_mean_orig = mean_actions[:original_batch_size]
                 _, actions_mean_symm = data_augmentation_func(
                     obs=None, actions=action_mean_orig, env=self.symmetry["_env"]
                 )
 
-                # Compute the loss
                 mse_loss_fn = torch.nn.MSELoss()
                 symmetry_loss = mse_loss_fn(
                     mean_actions[original_batch_size:], actions_mean_symm.detach()[original_batch_size:]
                 )
 
-                # Add the loss to the total loss
                 if self.symmetry["use_mirror_loss"]:
                     loss += self.symmetry["mirror_loss_coeff"] * symmetry_loss
                 else:
@@ -297,84 +283,82 @@ class PPOEncoderDecoder(PPO):
 
             # RND loss
             if self.rnd:
-                # Extract the rnd_state
                 with torch.no_grad():
                     rnd_state = self.rnd.get_rnd_state(batch.observations[:original_batch_size])  # type: ignore
                     rnd_state = self.rnd.state_normalizer(rnd_state)
-                # Predict the embedding and the target
                 predicted_embedding = self.rnd.predictor(rnd_state)
                 target_embedding = self.rnd.target(rnd_state).detach()
-                # Compute the loss as the mean squared error
                 mse_loss_fn = torch.nn.MSELoss()
                 rnd_loss = mse_loss_fn(predicted_embedding, target_embedding)
 
             # Decoder reconstruction loss
             decoder_output = self.actor.get_decoder_output()
             if decoder_output is not None and self.decoder_loss_coef > 0:
-                # Build the reconstruction target: normalized encoder observations.
-                # The encoder receives normalized obs, so the decoder must reconstruct the
-                # same normalized space — not the raw obs (which would force the decoder to
-                # also learn the inverse normalizer).
                 with torch.no_grad():
-                    encoder_obs_raw = torch.cat(
-                        [batch.observations[g] for g in self.actor.encoder_obs_groups],
+                    decoder_target = torch.cat(
+                        [batch.observations[g] for g in self.actor.decoder_obs_groups],
                         dim=-1,
                     )
-                    encoder_obs_target = self.actor.encoder_obs_normalizer(encoder_obs_raw)
-                decoder_loss = self.loss_fn(decoder_output, encoder_obs_target)
+                decoder_loss = self.loss_fn(decoder_output, decoder_target)
                 loss = loss + self.decoder_loss_coef * decoder_loss
             else:
                 decoder_loss = torch.zeros((), device=self.device)
 
-            # Compute the gradients for PPO
+            # VAE KL divergence loss: KL(q(z|x) || N(0, I))
+            vae_params = self.actor.get_vae_params() if hasattr(self.actor, "get_vae_params") else None
+            if vae_params is not None and self.kl_loss_coef > 0:
+                mu, log_var = vae_params
+                # Per-dimension KL: -0.5 * (1 + log_var - mu^2 - exp(log_var))
+                kl_per_dim = -0.5 * (1.0 + log_var - mu.pow(2) - log_var.exp())
+                if self.kl_free_nats > 0.0:
+                    kl_per_dim = torch.clamp(kl_per_dim, min=self.kl_free_nats)
+                kl_loss = kl_per_dim.mean()
+                loss = loss + self.kl_loss_coef * kl_loss
+            else:
+                kl_loss = torch.zeros((), device=self.device)
+
+            # Backprop
             self.optimizer.zero_grad()
             loss.backward()
-            # Compute the gradients for RND
             if self.rnd:
                 self.rnd_optimizer.zero_grad()
                 rnd_loss.backward()
 
-            # Collect gradients from all GPUs
             if self.is_multi_gpu:
                 self.reduce_parameters()
 
-            # Apply the gradients for PPO
             nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
             nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
             self.optimizer.step()
-            # Apply the gradients for RND
             if self.rnd_optimizer:
                 self.rnd_optimizer.step()
 
-            # Store the losses
+            # Accumulate losses
             mean_value_loss += value_loss.item()
             mean_surrogate_loss += surrogate_loss.item()
             mean_entropy += entropy.mean().item()
-            # Decoder loss
             mean_decoder_loss += decoder_loss.item()
-            # RND loss
+            mean_kl_loss += kl_loss.item()
             if mean_rnd_loss is not None:
                 mean_rnd_loss += rnd_loss.item()
-            # Symmetry loss
             if mean_symmetry_loss is not None:
                 mean_symmetry_loss += symmetry_loss.item()
 
-        # Divide the losses by the number of updates
         num_updates = self.num_learning_epochs * self.num_mini_batches
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
         mean_entropy /= num_updates
         mean_decoder_loss /= num_updates
+        mean_kl_loss /= num_updates
 
-        # Clear the storage
         self.storage.clear()
 
-        # Construct the loss dictionary
         loss_dict = {
             "value": mean_value_loss,
             "surrogate": mean_surrogate_loss,
             "entropy": mean_entropy,
             "decoder": mean_decoder_loss,
+            "kl": mean_kl_loss,
         }
         if self.rnd:
             loss_dict["rnd"] = mean_rnd_loss / num_updates
