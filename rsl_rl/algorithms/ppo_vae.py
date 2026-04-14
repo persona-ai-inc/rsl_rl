@@ -40,7 +40,7 @@ class PPOVAE(PPOAE):
                   -\tfrac{1}{2}(1 + \log\sigma_i^2 - \mu_i^2 - \sigma_i^2)
               \Bigr)
 
-    The optional *free-nats* threshold :math:`\tau` (``kl_free_nats``) prevents
+    The optional *free-nats* threshold :math:`\tau` (``kl_clip``) prevents
     posterior collapse for small latent dimensions by only penalising KL above
     the tolerance.
 
@@ -84,7 +84,7 @@ class PPOVAE(PPOAE):
         loss_type: str = "mse",
         # VAE parameters
         kl_loss_coef: float = 1.0,
-        kl_free_nats: float = 0.0,
+        kl_clip: float = 0.0,
     ) -> None:
         """Initialize PPOVAE.
 
@@ -113,7 +113,7 @@ class PPOVAE(PPOAE):
             decoder_loss_coef: Coefficient for the decoder reconstruction loss.
             loss_type: Regression loss type for decoder. Supported: ``"mse"``, ``"huber"``.
             kl_loss_coef: Coefficient for the VAE KL loss.
-            kl_free_nats: Free-nats tolerance. Only KL per dimension above
+            kl_clip: Free-nats tolerance. Only KL per dimension above
                 this threshold is penalised. Set to ``0.0`` to disable (standard VAE).
         """
         super().__init__(
@@ -143,7 +143,7 @@ class PPOVAE(PPOAE):
         )
 
         self.kl_loss_coef = kl_loss_coef
-        self.kl_free_nats = kl_free_nats
+        self.kl_clip = kl_clip
 
     def update(self) -> dict[str, float]:
         """Run PPO update epochs and add decoder reconstruction and KL losses.
@@ -310,8 +310,8 @@ class PPOVAE(PPOAE):
                 mu, log_var = vae_params
                 # Per-dimension KL: -0.5 * (1 + log_var - mu^2 - exp(log_var))
                 kl_per_dim = -0.5 * (1.0 + log_var - mu.pow(2) - log_var.exp())
-                if self.kl_free_nats > 0.0:
-                    kl_per_dim = torch.clamp(kl_per_dim, min=self.kl_free_nats)
+                if self.kl_clip > 0.0:
+                    kl_per_dim = torch.clamp(kl_per_dim, min=self.kl_clip)
                 kl_loss = kl_per_dim.mean()
                 loss = loss + self.kl_loss_coef * kl_loss
             else:
