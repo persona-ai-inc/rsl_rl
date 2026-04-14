@@ -36,8 +36,10 @@ class WandbSummaryWriter(SummaryWriter):
         except KeyError:
             entity = None
 
+        group = cfg.get("group_name")
+
         # Initialize wandb
-        wandb.init(project=project, entity=entity, name=run_name)
+        wandb.init(project=project, entity=entity, group=group, name=run_name)
         wandb.config.update({"log_dir": log_dir})
         self.video_files = []
 
