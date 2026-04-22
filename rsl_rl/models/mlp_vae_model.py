@@ -6,7 +6,10 @@
 
 from __future__ import annotations
 
+import copy
+
 import torch
+import torch.nn as nn
 from tensordict import TensorDict
 
 from rsl_rl.models.mlp_ae_model import MLPAutoEncoderModel
@@ -199,3 +202,112 @@ class MLPVAEModel(MLPAutoEncoderModel):
     def get_decoder_inference(self, latent_encoder: torch.Tensor) -> torch.Tensor:
         """Run the decoder on a provided latent directly (no sampling)."""
         return self.decoder(latent_encoder)
+
+    def as_jit(self) -> nn.Module:
+        """Return a TorchScript-compatible export wrapper."""
+        return _torchMLPVAEModel(self)
+
+    def as_onnx(self, verbose: bool) -> nn.Module:
+        """Return an ONNX-compatible export wrapper."""
+        return _OnnxMLPVAEModel(self, verbose)
+
+
+class _torchMLPVAEModel(nn.Module):  # noqa: N801
+    """TorchScript-exportable wrapper for MLPVAEModel.
+
+    Uses ``mu`` (no sampling) for deterministic inference, matching the behaviour
+    of :meth:`MLPVAEModel.get_latent` in eval mode.
+    """
+
+    def __init__(self, model: MLPVAEModel) -> None:
+        super().__init__()
+        self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
+        self.encoder_obs_normalizer = copy.deepcopy(model.encoder_obs_normalizer)
+        self.encoder = copy.deepcopy(model.encoder)  # outputs 2 * encoder_output_dim
+        self.mlp = copy.deepcopy(model.mlp)
+        if model.distribution is not None:
+            self.deterministic_output = model.distribution.as_deterministic_output_module()
+        else:
+            self.deterministic_output = nn.Identity()
+
+    def forward(self, obs: torch.Tensor, encoder_obs: torch.Tensor) -> torch.Tensor:
+        """Run deterministic inference.
+
+        Args:
+            obs: Pre-concatenated policy observations.
+            encoder_obs: Pre-concatenated encoder observations.
+
+        Returns:
+            Deterministic action output.
+        """
+        latent_policy = self.obs_normalizer(obs)
+        enc_out = self.encoder_obs_normalizer(encoder_obs)
+        enc_out = self.encoder(enc_out)  # (batch, 2 * encoder_output_dim)
+        mu, _ = enc_out.chunk(2, dim=-1)  # use mu, discard log_var
+        latent = torch.cat([latent_policy, mu], dim=-1)
+        out = self.mlp(latent)
+        return self.deterministic_output(out)
+
+    @torch.jit.export
+    def reset(self) -> None:
+        """Reset recurrent export state (no-op for MLP VAE exports)."""
+        pass
+
+
+class _OnnxMLPVAEModel(nn.Module):
+    """ONNX-exportable wrapper for MLPVAEModel.
+
+    Uses ``mu`` (no sampling) for deterministic inference, matching the behaviour
+    of :meth:`MLPVAEModel.get_latent` in eval mode.
+    """
+
+    is_recurrent: bool = False
+
+    def __init__(self, model: MLPVAEModel, verbose: bool) -> None:
+        super().__init__()
+        self.verbose = verbose
+        self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
+        self.obs_input_size = model.obs_dim
+        self.encoder_obs_normalizer = copy.deepcopy(model.encoder_obs_normalizer)
+        self.encoder = copy.deepcopy(model.encoder)  # outputs 2 * encoder_output_dim
+        self.encoder_obs_input_size = model.encoder_obs_dim
+        self.mlp = copy.deepcopy(model.mlp)
+        if model.distribution is not None:
+            self.deterministic_output = model.distribution.as_deterministic_output_module()
+        else:
+            self.deterministic_output = nn.Identity()
+
+    def forward(self, obs: torch.Tensor, encoder_obs: torch.Tensor) -> torch.Tensor:
+        """Run deterministic inference for ONNX export.
+
+        Args:
+            obs: Pre-concatenated policy observations.
+            encoder_obs: Pre-concatenated encoder observations.
+
+        Returns:
+            Deterministic action output.
+        """
+        latent_policy = self.obs_normalizer(obs)
+        enc_out = self.encoder_obs_normalizer(encoder_obs)
+        enc_out = self.encoder(enc_out)  # (batch, 2 * encoder_output_dim)
+        mu, _ = enc_out.chunk(2, dim=-1)  # use mu, discard log_var
+        latent = torch.cat([latent_policy, mu], dim=-1)
+        out = self.mlp(latent)
+        return self.deterministic_output(out)
+
+    def get_dummy_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return representative dummy inputs for ONNX tracing."""
+        return (
+            torch.zeros(1, self.obs_input_size),
+            torch.zeros(1, self.encoder_obs_input_size),
+        )
+
+    @property
+    def input_names(self) -> list[str]:
+        """Return ONNX input tensor names."""
+        return ["obs", "encoder_obs"]
+
+    @property
+    def output_names(self) -> list[str]:
+        """Return ONNX output tensor names."""
+        return ["actions"]

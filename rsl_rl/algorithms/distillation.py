@@ -60,6 +60,8 @@ class Distillation:
         # Distillation components
         self.student = student.to(self.device)
         self.teacher = teacher.to(self.device)
+        for param in self.teacher.parameters():
+            param.requires_grad_(False)
 
         # Create the optimizer
         self.optimizer = resolve_optimizer(optimizer)(self.student.parameters(), lr=learning_rate)  # type: ignore
@@ -125,6 +127,7 @@ class Distillation:
         self.num_updates += 1
         mean_behavior_loss = 0
         mean_encoder_reconstruction_loss = 0
+        mean_decoder_loss = 0
         loss = 0
         cnt = 0
 
@@ -138,15 +141,26 @@ class Distillation:
 
                 # Behavior cloning loss
                 behavior_loss = self.loss_fn(actions, batch.privileged_actions)
+
+                # Encoder reconstruction loss
                 encoder_reconstruction_loss = 0
                 if batch.encoder_state is not None and batch.privileged_encoder_state is not None:
                     encoder_state = self.student.get_encoder_state()
                     encoder_reconstruction_loss = self.loss_fn(encoder_state, batch.privileged_encoder_state)
 
+                # Decoder matching loss
+                decoder_loss = 0
+                if batch.encoder_state is not None and batch.privileged_encoder_state is not None:
+                    with torch.no_grad():
+                        teacher_decoder_output = self.teacher.get_decoder_inference(batch.privileged_encoder_state)
+                    student_decoder_output = self.teacher.get_decoder_inference(encoder_state)
+                    decoder_loss = self.loss_fn(student_decoder_output, teacher_decoder_output)
+
                 # Total loss
-                loss = loss + behavior_loss + encoder_reconstruction_loss
+                loss = loss + behavior_loss + encoder_reconstruction_loss + decoder_loss
                 mean_behavior_loss += behavior_loss.item()
                 mean_encoder_reconstruction_loss += encoder_reconstruction_loss.item()
+                mean_decoder_loss += decoder_loss.item()
                 cnt += 1
 
                 # Gradient step
@@ -168,12 +182,17 @@ class Distillation:
 
         mean_behavior_loss /= cnt
         mean_encoder_reconstruction_loss /= cnt
+        mean_decoder_loss /= cnt
         self.storage.clear()
         self.last_hidden_states = (self.student.get_hidden_state(), self.teacher.get_hidden_state())
         self.student.detach_hidden_state()
 
         # Construct the loss dictionary
-        loss_dict = {"behavior": mean_behavior_loss, "encoder_reconstruction": mean_encoder_reconstruction_loss}
+        loss_dict = {
+            "behavior": mean_behavior_loss,
+            "encoder_reconstruction": mean_encoder_reconstruction_loss,
+            "decoder_reconstruction": mean_decoder_loss,
+        }
 
         return loss_dict
 
@@ -225,6 +244,10 @@ class Distillation:
     def get_policy(self) -> MLPModel:
         """Get the policy model."""
         return self.student
+
+    def get_teacher(self) -> MLPModel:
+        """Get the teacher model."""
+        return self.teacher
 
     @staticmethod
     def construct_algorithm(obs: TensorDict, env: VecEnv, cfg: dict, device: str) -> Distillation:
