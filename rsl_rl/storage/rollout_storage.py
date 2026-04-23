@@ -164,11 +164,11 @@ class RolloutStorage:
         self.dones = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device).byte()
 
         # For distillation
-        if training_type == "distillation":
+        if training_type in ("distillation", "ppo_distillation"):
             self.privileged_actions = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=self.device)
 
         # For reinforcement learning
-        if training_type == "rl":
+        if training_type in ("rl", "ppo_distillation"):
             self.values = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
             self.actions_log_prob = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
             self.distribution_params: tuple[torch.Tensor, ...] | None = None  # Lazily initialized on first transition
@@ -199,11 +199,11 @@ class RolloutStorage:
         self.dones[self.step].copy_(transition.dones.view(-1, 1))
 
         # For distillation
-        if self.training_type == "distillation":
+        if self.training_type in ("distillation", "ppo_distillation"):
             self.privileged_actions[self.step].copy_(transition.privileged_actions)  # type: ignore
 
         # For reinforcement learning
-        if self.training_type == "rl":
+        if self.training_type in ("rl", "ppo_distillation"):
             self.values[self.step].copy_(transition.values)  # type: ignore
             self.actions_log_prob[self.step].copy_(transition.actions_log_prob.view(-1, 1))
             if self.distribution_params is None:  # Initialize the distribution parameters
@@ -258,7 +258,7 @@ class RolloutStorage:
     # For reinforcement learning with feedforward networks
     def mini_batch_generator(self, num_mini_batches: int, num_epochs: int = 8) -> Generator[Batch, None, None]:
         """Yield shuffled flat mini-batches for feedforward RL updates."""
-        if self.training_type != "rl":
+        if self.training_type not in ("rl", "ppo_distillation"):
             raise ValueError("This function is only available for reinforcement learning training.")
         batch_size = self.num_envs * self.num_transitions_per_env
         mini_batch_size = batch_size // num_mini_batches
@@ -273,6 +273,8 @@ class RolloutStorage:
         advantages = self.advantages.flatten(0, 1)
         old_distribution_params = tuple(p.flatten(0, 1) for p in self.distribution_params)  # type: ignore
         encoder_state = self.encoder_state.flatten(0, 1) if self.encoder_state is not None else None
+        privileged_actions = self.privileged_actions.flatten(0, 1) if self.training_type == "ppo_distillation" else None
+        privileged_encoder_state = self.privileged_encoder_state.flatten(0, 1) if self.privileged_encoder_state is not None else None
 
         for epoch in range(num_epochs):
             for i in range(num_mini_batches):
@@ -291,6 +293,8 @@ class RolloutStorage:
                     old_actions_log_prob=old_actions_log_prob[batch_idx],
                     old_distribution_params=tuple(p[batch_idx] for p in old_distribution_params),
                     encoder_state=encoder_state[batch_idx] if encoder_state is not None else None,
+                    privileged_actions=privileged_actions[batch_idx] if privileged_actions is not None else None,
+                    privileged_encoder_state=privileged_encoder_state[batch_idx] if privileged_encoder_state is not None else None,
                 )
 
     # For reinforcement learning with recurrent networks
@@ -298,7 +302,7 @@ class RolloutStorage:
         self, num_mini_batches: int, num_epochs: int = 8
     ) -> Generator[Batch, None, None]:
         """Yield trajectory mini-batches with masks and recurrent hidden states."""
-        if self.training_type != "rl":
+        if self.training_type not in ("rl", "ppo_distillation"):
             raise ValueError("This function is only available for reinforcement learning training.")
         padded_obs_trajectories, trajectory_masks = split_and_pad_trajectories(self.observations, self.dones)
         mini_batch_size = self.num_envs // num_mini_batches
@@ -363,6 +367,8 @@ class RolloutStorage:
                     hidden_states=(hidden_state_a_batch, hidden_state_c_batch),  # type: ignore
                     masks=trajectory_masks[:, first_traj:last_traj],
                     encoder_state=self.encoder_state[:, start:stop] if self.encoder_state is not None else None,
+                    privileged_actions=self.privileged_actions[:, start:stop] if self.training_type == "ppo_distillation" else None,
+                    privileged_encoder_state=self.privileged_encoder_state[:, start:stop] if self.privileged_encoder_state is not None else None,
                 )
 
                 first_traj = last_traj
