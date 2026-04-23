@@ -242,7 +242,7 @@ class _OnnxTCNModel(nn.Module):
         # Concatenate and run MLP head
         latent = torch.cat([latent_policy, latent_encoder], dim=-1)
         out = self.mlp(latent)
-        return self.deterministic_output(out)
+        return self.deterministic_output(out), latent_encoder
 
     def get_dummy_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Return representative dummy inputs for ONNX tracing."""
@@ -260,4 +260,4 @@ class _OnnxTCNModel(nn.Module):
     @property
     def output_names(self) -> list[str]:
         """Return ONNX output tensor names."""
-        return ["actions"]
+        return ["actions", "encoder_output"]

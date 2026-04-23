@@ -211,6 +211,14 @@ class MLPVAEModel(MLPAutoEncoderModel):
         """Return an ONNX-compatible export wrapper."""
         return _OnnxMLPVAEModel(self, verbose)
 
+    def as_jit_decoder(self) -> nn.Module:
+        """Return a TorchScript-compatible decoder-only export wrapper."""
+        return _torchMLPVAEDecoderModel(self)
+
+    def as_onnx_decoder(self, verbose: bool) -> nn.Module:
+        """Return an ONNX-compatible decoder-only export wrapper."""
+        return _OnnxMLPVAEDecoderModel(self, verbose)
+
 
 class _torchMLPVAEModel(nn.Module):  # noqa: N801
     """TorchScript-exportable wrapper for MLPVAEModel.
@@ -311,3 +319,72 @@ class _OnnxMLPVAEModel(nn.Module):
     def output_names(self) -> list[str]:
         """Return ONNX output tensor names."""
         return ["actions"]
+
+
+class _torchMLPVAEDecoderModel(nn.Module):  # noqa: N801
+    """TorchScript-exportable decoder-only wrapper for MLPVAEModel.
+
+    Takes the encoder output (``mu``) directly and returns the decoder reconstruction,
+    without running the encoder or policy MLP.
+    """
+
+    def __init__(self, model: MLPVAEModel) -> None:
+        super().__init__()
+        self.decoder = copy.deepcopy(model.decoder)
+
+    def forward(self, encoder_output: torch.Tensor) -> torch.Tensor:
+        """Run the decoder on a pre-computed latent.
+
+        Args:
+            encoder_output: Encoder latent (``mu``) of shape ``(batch, encoder_output_dim)``.
+
+        Returns:
+            Decoded reconstruction of shape ``(batch, decoder_obs_dim)``.
+        """
+        return self.decoder(encoder_output)
+
+    @torch.jit.export
+    def reset(self) -> None:
+        """Reset recurrent export state (no-op for decoder exports)."""
+        pass
+
+
+class _OnnxMLPVAEDecoderModel(nn.Module):
+    """ONNX-exportable decoder-only wrapper for MLPVAEModel.
+
+    Takes the encoder output (``mu``) directly and returns the decoder reconstruction,
+    without running the encoder or policy MLP.
+    """
+
+    is_recurrent: bool = False
+
+    def __init__(self, model: MLPVAEModel, verbose: bool) -> None:
+        super().__init__()
+        self.verbose = verbose
+        self.decoder = copy.deepcopy(model.decoder)
+        self.encoder_output_dim = model.encoder_output_dim
+
+    def forward(self, encoder_output: torch.Tensor) -> torch.Tensor:
+        """Run the decoder on a pre-computed latent for ONNX export.
+
+        Args:
+            encoder_output: Encoder latent (``mu``) of shape ``(batch, encoder_output_dim)``.
+
+        Returns:
+            Decoded reconstruction of shape ``(batch, decoder_obs_dim)``.
+        """
+        return self.decoder(encoder_output)
+
+    def get_dummy_inputs(self) -> tuple[torch.Tensor]:
+        """Return a representative dummy input for ONNX tracing."""
+        return (torch.zeros(1, self.encoder_output_dim),)
+
+    @property
+    def input_names(self) -> list[str]:
+        """Return ONNX input tensor names."""
+        return ["encoder_output"]
+
+    @property
+    def output_names(self) -> list[str]:
+        """Return ONNX output tensor names."""
+        return ["decoded"]
