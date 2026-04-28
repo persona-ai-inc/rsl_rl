@@ -84,7 +84,7 @@ class PPODistillation(PPO):
         encoder_loss_coef: float = 0.0,
         decoder_loss_coef: float = 0.0,
         loss_type: str = "mse",
-        ppo_learning_start: int = 0,
+        total_iteration: int = 10_000,
     ) -> None:
         """Initialize PPODistillation.
 
@@ -160,7 +160,7 @@ class PPODistillation(PPO):
             raise ValueError(f"Unknown loss type: {loss_type}. Supported types are: {list(loss_fn_dict.keys())}")
         self.loss_fn = loss_fn_dict[loss_type]
 
-        self.ppo_learning_start = ppo_learning_start
+        self.total_iteration = total_iteration
         self.current_iteration = 0
 
     # ------------------------------------------------------------------
@@ -240,53 +240,57 @@ class PPODistillation(PPO):
                     hidden_state=batch.hidden_states[0],
                     stochastic_output=True,
                 )
+            # curriculum from https://arxiv.org/pdf/2602.15827
+            weight_distillation = max(0.1, 1 - self.current_iteration / (self.total_iteration / 2))
+            weight_ppo = 1 - weight_distillation
 
             loss = torch.zeros((), device=self.device)
-            ppo_active = self.current_iteration >= self.ppo_learning_start
-            if ppo_active:
-                actions_log_prob = self.actor.get_output_log_prob(batch.actions)  # type: ignore
-                values = self.critic(batch.observations, masks=batch.masks, hidden_state=batch.hidden_states[1])
-                distribution_params = tuple(p[:original_batch_size] for p in self.actor.output_distribution_params)
-                entropy = self.actor.output_entropy[:original_batch_size]
 
-                # Adaptive learning rate
-                if self.desired_kl is not None and self.schedule == "adaptive":
-                    with torch.inference_mode():
-                        kl = self.actor.get_kl_divergence(batch.old_distribution_params, distribution_params)  # type: ignore
-                        kl_mean = torch.mean(kl)
-                        if self.is_multi_gpu:
-                            torch.distributed.all_reduce(kl_mean, op=torch.distributed.ReduceOp.SUM)
-                            kl_mean /= self.gpu_world_size
-                        if self.gpu_global_rank == 0:
-                            if kl_mean > self.desired_kl * 2.0:
-                                self.learning_rate = max(1e-5, self.learning_rate / 1.5)
-                            elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
-                                self.learning_rate = min(1e-2, self.learning_rate * 1.5)
-                        if self.is_multi_gpu:
-                            lr_tensor = torch.tensor(self.learning_rate, device=self.device)
-                            torch.distributed.broadcast(lr_tensor, src=0)
-                            self.learning_rate = lr_tensor.item()
-                        for param_group in self.optimizer.param_groups:
-                            param_group["lr"] = self.learning_rate
+            actions_log_prob = self.actor.get_output_log_prob(batch.actions)  # type: ignore
+            values = self.critic(batch.observations, masks=batch.masks, hidden_state=batch.hidden_states[1])
+            distribution_params = tuple(p[:original_batch_size] for p in self.actor.output_distribution_params)
+            entropy = self.actor.output_entropy[:original_batch_size]
 
-                # Surrogate loss
-                ratio = torch.exp(actions_log_prob - torch.squeeze(batch.old_actions_log_prob))  # type: ignore
-                surrogate = -torch.squeeze(batch.advantages) * ratio  # type: ignore
-                surrogate_clipped = -torch.squeeze(batch.advantages) * torch.clamp(  # type: ignore
-                    ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
-                )
-                surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
+            # Adaptive learning rate
+            if self.desired_kl is not None and self.schedule == "adaptive":
+                with torch.inference_mode():
+                    kl = self.actor.get_kl_divergence(batch.old_distribution_params, distribution_params)  # type: ignore
+                    kl_mean = torch.mean(kl)
+                    if self.is_multi_gpu:
+                        torch.distributed.all_reduce(kl_mean, op=torch.distributed.ReduceOp.SUM)
+                        kl_mean /= self.gpu_world_size
+                    if self.gpu_global_rank == 0:
+                        if kl_mean > self.desired_kl * 2.0:
+                            self.learning_rate = max(1e-5, self.learning_rate / 1.5)
+                        elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
+                            self.learning_rate = min(1e-2, self.learning_rate * 1.5)
+                    if self.is_multi_gpu:
+                        lr_tensor = torch.tensor(self.learning_rate, device=self.device)
+                        torch.distributed.broadcast(lr_tensor, src=0)
+                        self.learning_rate = lr_tensor.item()
+                    for param_group in self.optimizer.param_groups:
+                        param_group["lr"] = self.learning_rate
 
-                # Value function loss
-                if self.use_clipped_value_loss:
-                    value_clipped = batch.values + (values - batch.values).clamp(-self.clip_param, self.clip_param)
-                    value_losses = (values - batch.returns).pow(2)
-                    value_losses_clipped = (value_clipped - batch.returns).pow(2)
-                    value_loss = torch.max(value_losses, value_losses_clipped).mean()
-                else:
-                    value_loss = (batch.returns - values).pow(2).mean()  # type: ignore
+            # Surrogate loss
+            ratio = torch.exp(actions_log_prob - torch.squeeze(batch.old_actions_log_prob))  # type: ignore
+            surrogate = -torch.squeeze(batch.advantages) * ratio  # type: ignore
+            surrogate_clipped = -torch.squeeze(batch.advantages) * torch.clamp(  # type: ignore
+                ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
+            )
+            surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
 
-                loss += surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy.mean()
+            # Value function loss
+            if self.use_clipped_value_loss:
+                value_clipped = batch.values + (values - batch.values).clamp(-self.clip_param, self.clip_param)
+                value_losses = (values - batch.returns).pow(2)
+                value_losses_clipped = (value_clipped - batch.returns).pow(2)
+                value_loss = torch.max(value_losses, value_losses_clipped).mean()
+            else:
+                value_loss = (batch.returns - values).pow(2).mean()  # type: ignore
+
+            loss += weight_ppo * (
+                surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy.mean()
+            )
 
             # Symmetry loss
             if self.symmetry:
@@ -325,7 +329,7 @@ class PPODistillation(PPO):
                 # distribution_params[0] is the mean for a Gaussian distribution
                 student_actions_mean = distribution_params[0]
                 imitation_loss = self.loss_fn(student_actions_mean, batch.privileged_actions)
-                loss = loss + self.imitation_loss_coef * imitation_loss
+                loss += weight_distillation * self.imitation_loss_coef * imitation_loss
 
             # encoder and decoder imitation loss
             encoder_loss = torch.zeros((), device=self.device)
@@ -336,7 +340,7 @@ class PPODistillation(PPO):
                 if self.encoder_loss_coef > 0:
                     student_encoder_state = self.actor.get_encoder_state()
                     encoder_loss = self.loss_fn(student_encoder_state, batch.privileged_encoder_state)
-                    loss = loss + self.encoder_loss_coef * encoder_loss
+                    loss += self.encoder_loss_coef * encoder_loss
 
                 # Decoder matching loss
                 if self.decoder_loss_coef > 0:
@@ -344,7 +348,7 @@ class PPODistillation(PPO):
                         teacher_decoder_output = self.teacher.get_decoder_inference(batch.privileged_encoder_state)
                     student_decoder_output = self.teacher.get_decoder_inference(student_encoder_state)
                     decoder_loss = self.loss_fn(student_decoder_output, teacher_decoder_output)
-                    loss = loss + self.decoder_loss_coef * decoder_loss
+                    loss += self.decoder_loss_coef * decoder_loss
 
             # Gradient step
             self.optimizer.zero_grad()
@@ -361,10 +365,9 @@ class PPODistillation(PPO):
                 self.rnd_optimizer.step()
 
             # Accumulate losses
-            if ppo_active:
-                mean_value_loss += value_loss.item()
-                mean_surrogate_loss += surrogate_loss.item()
-                mean_entropy += entropy.mean().item()
+            mean_value_loss += value_loss.item()
+            mean_surrogate_loss += surrogate_loss.item()
+            mean_entropy += entropy.mean().item()
             mean_imitation_loss += imitation_loss.item()
             mean_encoder_loss += encoder_loss.item()
             mean_decoder_loss += decoder_loss.item()
@@ -377,6 +380,9 @@ class PPODistillation(PPO):
         mean_imitation_loss /= num_updates
         mean_encoder_loss /= num_updates
         mean_decoder_loss /= num_updates
+        mean_value_loss /= num_updates
+        mean_surrogate_loss /= num_updates
+        mean_entropy /= num_updates
 
         self.storage.clear()
 
@@ -384,23 +390,20 @@ class PPODistillation(PPO):
             "imitation": mean_imitation_loss,
             "encoder_reconstruction": mean_encoder_loss,
             "decoder_reconstruction": mean_decoder_loss,
+            "value": mean_value_loss,
+            "surrogate": mean_surrogate_loss,
+            "entropy": mean_entropy,
+            "weight_ppo": weight_ppo,
+            "weight_distillation": weight_distillation,
         }
-        if ppo_active:
-            loss_dict["value"] = mean_value_loss / num_updates
-            loss_dict["surrogate"] = mean_surrogate_loss / num_updates
-            loss_dict["entropy"] = mean_entropy / num_updates
-        if self.rnd:
+        if self.rnd and mean_rnd_loss is not None:
             loss_dict["rnd"] = mean_rnd_loss / num_updates
-        if self.symmetry:
+        if self.symmetry and mean_symmetry_loss is not None:
             loss_dict["symmetry"] = mean_symmetry_loss / num_updates
 
         self.current_iteration += 1
 
         return loss_dict
-
-    # ------------------------------------------------------------------
-    # Mode switching
-    # ------------------------------------------------------------------
 
     def train_mode(self) -> None:
         """Set student and critic to train mode; keep teacher in eval mode."""
@@ -412,22 +415,56 @@ class PPODistillation(PPO):
         super().eval_mode()
         self.teacher.eval()
 
-    # ------------------------------------------------------------------
-    # Persistence
-    # ------------------------------------------------------------------
+    # def save(self) -> dict:
+    #     """Return a dict of all models for saving."""
+    #     saved = super().save()
+    #     saved["teacher_state_dict"] = self.teacher.state_dict()
+    #     return saved
+
+    # def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
+    #     """Load specified models from a saved dict."""
+    #     if load_cfg is None and any("actor_state_dict" in k for k in loaded_dict):
+    #         # Loading from a PPO / privileged-policy checkpoint: only populate teacher
+    #         load_cfg = {"teacher": True, "iteration": False}  # during training
+    #     elif load_cfg is None:
+    #         load_cfg = {
+    #             "actor": True,
+    #             "critic": True,
+    #             "teacher": True,
+    #             "optimizer": True,
+    #             "iteration": True,
+    #         }
+    #     load_cfg = {"actor": True, "teacher": True, "iteration": False}  # during inference
+    #     load_iteration = super().load(loaded_dict, load_cfg, strict)
+
+    #     if load_cfg.get("teacher"):
+    #         self.teacher.load_state_dict(
+    #             loaded_dict.get("teacher_state_dict") or loaded_dict["actor_state_dict"], strict=strict
+    #         )
+    #         self.teacher_loaded = True
+
+    #     return load_iteration
 
     def save(self) -> dict:
         """Return a dict of all models for saving."""
-        saved = super().save()
-        saved["teacher_state_dict"] = self.teacher.state_dict()
-        return saved
+        saved_dict = {
+            "student_actor_state_dict": self.actor.state_dict(),
+            "student_critic_state_dict": self.critic.state_dict(),
+            "student_optimizer_state_dict": self.optimizer.state_dict(),
+            "teacher_state_dict": self.teacher.state_dict(),
+        }
+        if self.rnd:
+            saved_dict["rnd_state_dict"] = self.rnd.state_dict()
+            saved_dict["rnd_optimizer_state_dict"] = self.rnd_optimizer.state_dict()
+        return saved_dict
 
     def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
         """Load specified models from a saved dict."""
-        if load_cfg is None and any("actor_state_dict" in k for k in loaded_dict):
+        if load_cfg is None and "actor_state_dict" in loaded_dict:
             # Loading from a PPO / privileged-policy checkpoint: only populate teacher
-            load_cfg = {"teacher": True, "iteration": False}
+            load_cfg = {"teacher": True, "iteration": False}  # during training
         elif load_cfg is None:
+            # during inference
             load_cfg = {
                 "actor": True,
                 "critic": True,
@@ -436,15 +473,23 @@ class PPODistillation(PPO):
                 "iteration": True,
             }
 
-        load_iteration = super().load(loaded_dict, load_cfg, strict)
-
+        # Load the specified models
+        if load_cfg.get("actor"):
+            self.actor.load_state_dict(loaded_dict["student_actor_state_dict"], strict=strict)
+        if load_cfg.get("critic"):
+            self.critic.load_state_dict(loaded_dict["student_critic_state_dict"], strict=strict)
+        if load_cfg.get("optimizer"):
+            self.optimizer.load_state_dict(loaded_dict["student_optimizer_state_dict"])
+        if load_cfg.get("rnd") and self.rnd:
+            self.rnd.load_state_dict(loaded_dict["rnd_state_dict"], strict=strict)
+            self.rnd_optimizer.load_state_dict(loaded_dict["rnd_optimizer_state_dict"])
         if load_cfg.get("teacher"):
             self.teacher.load_state_dict(
                 loaded_dict.get("teacher_state_dict") or loaded_dict["actor_state_dict"], strict=strict
             )
             self.teacher_loaded = True
 
-        return load_iteration
+        return load_cfg.get("iteration", False)
 
     def get_teacher(self) -> MLPModel:
         """Return the teacher model."""
@@ -493,10 +538,12 @@ class PPODistillation(PPO):
             device
         )
         print(f"Student Model: {student}")
+
         teacher: MLPModel = teacher_class(obs, cfg["obs_groups"], "teacher", env.num_actions, **cfg["teacher"]).to(
             device
         )
         print(f"Teacher Model: {teacher}")
+
         if cfg["algorithm"].pop("share_cnn_encoders", None):  # Share CNN encoders between actor and critic
             cfg["critic"]["cnns"] = student.cnns  # type: ignore
         critic: MLPModel = critic_class(obs, cfg["obs_groups"], "critic", 1, **cfg["critic"]).to(device)
