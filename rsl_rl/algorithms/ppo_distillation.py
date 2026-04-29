@@ -84,6 +84,7 @@ class PPODistillation(PPO):
         encoder_loss_coef: float = 0.0,
         decoder_loss_coef: float = 0.0,
         loss_type: str = "mse",
+        loss_schedule: str = "fixed",
         total_iteration: int = 10_000,
     ) -> None:
         """Initialize PPODistillation.
@@ -161,6 +162,7 @@ class PPODistillation(PPO):
         self.loss_fn = loss_fn_dict[loss_type]
 
         self.total_iteration = total_iteration
+        self.loss_schedule = loss_schedule
         self.current_iteration = 0
 
     # ------------------------------------------------------------------
@@ -241,8 +243,15 @@ class PPODistillation(PPO):
                     stochastic_output=True,
                 )
             # curriculum from https://arxiv.org/pdf/2602.15827
-            weight_distillation = max(0.1, 1 - self.current_iteration / (self.total_iteration / 2))
-            weight_ppo = 1 - weight_distillation
+            if self.loss_schedule == "curriculum":
+                weight_distillation = max(0.1, 1 - self.current_iteration / (self.total_iteration / 2))
+                weight_ppo = 1 - weight_distillation
+            elif self.loss_schedule == "fixed":
+                weight_distillation = 1.0
+                weight_ppo = 1.0
+            else:
+                weight_distillation = 1.0
+                weight_ppo = 1.0
 
             loss = torch.zeros((), device=self.device)
 

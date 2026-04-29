@@ -167,7 +167,7 @@ class _torchTCNModel(nn.Module):  # noqa: N801
         else:
             self.deterministic_output = nn.Identity()
 
-    def forward(self, obs: torch.Tensor, encoder_obs: torch.Tensor) -> torch.Tensor:
+    def forward(self, obs: torch.Tensor, encoder_obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Run deterministic inference.
 
         Args:
@@ -188,7 +188,7 @@ class _torchTCNModel(nn.Module):  # noqa: N801
         # Concatenate and run MLP head
         latent = torch.cat([latent_policy, latent_encoder], dim=-1)
         out = self.mlp(latent)
-        return self.deterministic_output(out)
+        return self.deterministic_output(out), latent_encoder
 
     @torch.jit.export
     def reset(self) -> None:
