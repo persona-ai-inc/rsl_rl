@@ -470,10 +470,11 @@ class PPODistillation(PPO):
     def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
         """Load specified models from a saved dict."""
         if load_cfg is None and "actor_state_dict" in loaded_dict:
-            # Loading from a PPO / privileged-policy checkpoint: only populate teacher
-            load_cfg = {"teacher": True, "iteration": False}  # during training
+            # Loading from a PPO / privileged-policy checkpoint: populate teacher and
+            # warm-start student actor MLP + critic from teacher weights.
+            load_cfg = {"teacher": True, "init_student_from_teacher": True, "iteration": False}
         elif load_cfg is None:
-            # during inference
+            # Loading from a PPO distillation checkpoint (resume training or inference).
             load_cfg = {
                 "actor": True,
                 "critic": True,
@@ -492,11 +493,23 @@ class PPODistillation(PPO):
         if load_cfg.get("rnd") and self.rnd:
             self.rnd.load_state_dict(loaded_dict["rnd_state_dict"], strict=strict)
             self.rnd_optimizer.load_state_dict(loaded_dict["rnd_optimizer_state_dict"])
+        teacher_dict = loaded_dict.get("teacher_state_dict") or loaded_dict["actor_state_dict"]
         if load_cfg.get("teacher"):
-            self.teacher.load_state_dict(
-                loaded_dict.get("teacher_state_dict") or loaded_dict["actor_state_dict"], strict=strict
-            )
+            self.teacher.load_state_dict(teacher_dict, strict=strict)
             self.teacher_loaded = True
+        if load_cfg.get("init_student_from_teacher"):
+            # Copy shared MLP weights (mlp, distribution) from teacher to student actor.
+            # The encoder is excluded — different architecture (TCN vs VAE), learned from scratch.
+            student_dict = self.actor.state_dict()
+            for key, value in teacher_dict.items():
+                if key.startswith("mlp.") or key.startswith("distribution."):
+                    if key in student_dict and student_dict[key].shape == value.shape:
+                        student_dict[key] = value
+            self.actor.load_state_dict(student_dict, strict=False)
+            # Warm-start critic from teacher checkpoint if available
+            critic_src = loaded_dict.get("critic_state_dict")
+            if critic_src is not None:
+                self.critic.load_state_dict(critic_src, strict=strict)
 
         return load_cfg.get("iteration", False)
 
