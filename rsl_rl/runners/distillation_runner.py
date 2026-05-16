@@ -12,6 +12,16 @@ from rsl_rl.modules import StudentTeacher, StudentTeacherRecurrent
 from rsl_rl.runners import OnPolicyRunner
 from rsl_rl.storage import RolloutStorage
 
+# Persona compositional networks: factory function is registered under the policy
+# class_name "CompositionalStudentTeacher" so DistillationRunner's eval() resolves it.
+# Import failure is non-fatal (shared_lab may not be importable in some contexts).
+try:
+    from shared_lab.rl.compositional_networks.factory import (
+        build_compositional_student_teacher as CompositionalStudentTeacher,  # noqa: F401
+    )
+except ImportError:
+    pass
+
 
 class DistillationRunner(OnPolicyRunner):
     """Distillation runner for training and evaluation of teacher-student methods."""
