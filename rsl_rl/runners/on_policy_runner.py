@@ -53,6 +53,9 @@ class OnPolicyRunner:
 
         self.current_learning_iteration = 0
 
+        # Initialize the logging writer
+        self.logger.init_logging_writer()
+
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
         """Run the learning loop for the specified number of iterations."""
         # Randomize initial episode lengths (for exploration)
@@ -70,8 +73,8 @@ class OnPolicyRunner:
             print(f"Synchronizing parameters for rank {self.gpu_global_rank}...")
             self.alg.broadcast_parameters()
 
-        # Initialize the logging writer
-        self.logger.init_logging_writer()
+        # # Initialize the logging writer
+        # self.logger.init_logging_writer()
 
         # Start training
         start_it = self.current_learning_iteration
