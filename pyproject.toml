@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rsl-rl-lib"
-version = "5.0.1"
+version = "5.4.1"
 keywords = ["reinforcement-learning", "robotics"]
 maintainers = [
   { name="Clemens Schwarke", email="cschwarke@ethz.ch" },
@@ -29,6 +29,7 @@ dependencies = [
     "torchvision>=0.5.0",
     "tensordict>=0.7.0",
     "numpy>=1.16.4",
+    "tensorboard",
     "GitPython",
     "onnx",
     "onnxscript>=0.5.4",
