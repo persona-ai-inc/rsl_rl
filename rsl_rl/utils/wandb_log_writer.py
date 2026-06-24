@@ -22,7 +22,7 @@ except ModuleNotFoundError:
 class WandbLogWriter(SummaryWriter, LogWriter):
     """Summary writer for W&B."""
 
-    def __init__(self, log_dir: str, project_name: str) -> None:
+    def __init__(self, log_dir: str, project_name: str, cfg: dict) -> None:
         """Initialize a W&B run for logging."""
         if wandb is None:
             raise ModuleNotFoundError("wandb package is required to log to Weights and Biases.")
@@ -32,7 +32,7 @@ class WandbLogWriter(SummaryWriter, LogWriter):
         run_name = os.path.split(log_dir)[-1]
 
         try:
-            entity = os.environ["WANDB_USERNAME"]
+            entity = cfg["wandb_entity"]
         except KeyError:
             entity = None
 
