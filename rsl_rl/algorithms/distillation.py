@@ -68,6 +68,11 @@ class Distillation:
         self._raw_student = self.student
         self._raw_teacher = self.teacher
 
+        # Handles to the uncompiled modules for state_dict operations and export. If compilation is disabled, these
+        # simply alias ``self.student`` / ``self.teacher``.
+        self._raw_student = self.student
+        self._raw_teacher = self.teacher
+
         # Create the optimizer
         self.optimizer = resolve_optimizer(optimizer)(self.student.parameters(), lr=learning_rate)  # type: ignore
 
