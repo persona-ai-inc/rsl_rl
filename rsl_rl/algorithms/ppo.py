@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 from itertools import chain
 from tensordict import TensorDict
+import inspect
 
 from rsl_rl.env import VecEnv
 from rsl_rl.extensions import RandomNetworkDistillation, Symmetry, resolve_rnd_config, resolve_symmetry_config
