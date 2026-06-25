@@ -424,18 +424,60 @@ class PPODistillation(PPO):
         super().eval_mode()
         self.teacher.eval()
 
+    # NOTE: DAgger PPO without copying teacher actor weight to student actor
+    def save(self) -> dict:
+        """Return a dict of all models for saving."""
+        saved = super().save()
+        saved["teacher_state_dict"] = self.teacher.state_dict()
+        return saved
+
+    def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
+        """Load specified models from a saved dict."""
+        if load_cfg is None and any("actor_state_dict" in k for k in loaded_dict):
+            # Loading from a PPO / privileged-policy checkpoint: only populate teacher
+            load_cfg = {"teacher": True, "iteration": False}  # during training
+        elif load_cfg is None:
+            load_cfg = {
+                "actor": True,
+                "critic": True,
+                "teacher": True, # teacher actor
+                "optimizer": True,
+                "iteration": True,
+            }
+        load_cfg = {"actor": True, "teacher": True, "iteration": False}  # during inference
+        load_iteration = super().load(loaded_dict, load_cfg, strict)
+
+        if load_cfg.get("teacher"):
+            self.teacher.load_state_dict(
+                loaded_dict.get("teacher_state_dict") or loaded_dict["actor_state_dict"], strict=strict
+            )
+            self.teacher_loaded = True
+
+        return load_iteration
+
+    # # NOTE: DAgger PPO copying teacher actor weight to student actor
+    # # This is only valid when teacher/student actor/critic have same architecture
     # def save(self) -> dict:
     #     """Return a dict of all models for saving."""
-    #     saved = super().save()
-    #     saved["teacher_state_dict"] = self.teacher.state_dict()
-    #     return saved
+    #     saved_dict = {
+    #         "student_actor_state_dict": self.actor.state_dict(),
+    #         "student_critic_state_dict": self.critic.state_dict(),
+    #         "student_optimizer_state_dict": self.optimizer.state_dict(),
+    #         "teacher_state_dict": self.teacher.state_dict(),
+    #     }
+    #     if self.rnd:
+    #         saved_dict["rnd_state_dict"] = self.rnd.state_dict()
+    #         saved_dict["rnd_optimizer_state_dict"] = self.rnd_optimizer.state_dict()
+    #     return saved_dict
 
     # def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
     #     """Load specified models from a saved dict."""
-    #     if load_cfg is None and any("actor_state_dict" in k for k in loaded_dict):
-    #         # Loading from a PPO / privileged-policy checkpoint: only populate teacher
-    #         load_cfg = {"teacher": True, "iteration": False}  # during training
+    #     if load_cfg is None and "actor_state_dict" in loaded_dict:
+    #         # Loading from a PPO / privileged-policy checkpoint: populate teacher and
+    #         # warm-start student actor MLP + critic from teacher weights.
+    #         load_cfg = {"teacher": True, "init_student_from_teacher": True, "iteration": False}
     #     elif load_cfg is None:
+    #         # Loading from a PPO distillation checkpoint (resume training or inference).
     #         load_cfg = {
     #             "actor": True,
     #             "critic": True,
@@ -443,75 +485,36 @@ class PPODistillation(PPO):
     #             "optimizer": True,
     #             "iteration": True,
     #         }
-    #     load_cfg = {"actor": True, "teacher": True, "iteration": False}  # during inference
-    #     load_iteration = super().load(loaded_dict, load_cfg, strict)
 
+    #     # Load the specified models
+    #     if load_cfg.get("actor"):
+    #         self.actor.load_state_dict(loaded_dict["student_actor_state_dict"], strict=strict)
+    #     if load_cfg.get("critic"):
+    #         self.critic.load_state_dict(loaded_dict["student_critic_state_dict"], strict=strict)
+    #     if load_cfg.get("optimizer"):
+    #         self.optimizer.load_state_dict(loaded_dict["student_optimizer_state_dict"])
+    #     if load_cfg.get("rnd") and self.rnd:
+    #         self.rnd.load_state_dict(loaded_dict["rnd_state_dict"], strict=strict)
+    #         self.rnd_optimizer.load_state_dict(loaded_dict["rnd_optimizer_state_dict"])
+    #     teacher_dict = loaded_dict.get("teacher_state_dict") or loaded_dict["actor_state_dict"]
     #     if load_cfg.get("teacher"):
-    #         self.teacher.load_state_dict(
-    #             loaded_dict.get("teacher_state_dict") or loaded_dict["actor_state_dict"], strict=strict
-    #         )
+    #         self.teacher.load_state_dict(teacher_dict, strict=strict)
     #         self.teacher_loaded = True
+    #     if load_cfg.get("init_student_from_teacher"):
+    #         # Copy shared MLP weights (mlp, distribution) from teacher to student actor.
+    #         # The encoder is excluded — different architecture (TCN vs VAE), learned from scratch.
+    #         student_dict = self.actor.state_dict()
+    #         for key, value in teacher_dict.items():
+    #             if key.startswith("mlp.") or key.startswith("distribution."):
+    #                 if key in student_dict and student_dict[key].shape == value.shape:
+    #                     student_dict[key] = value
+    #         self.actor.load_state_dict(student_dict, strict=False)
+    #         # Warm-start critic from teacher checkpoint if available
+    #         critic_src = loaded_dict.get("critic_state_dict")
+    #         if critic_src is not None:
+    #             self.critic.load_state_dict(critic_src, strict=strict)
 
-    #     return load_iteration
-
-    def save(self) -> dict:
-        """Return a dict of all models for saving."""
-        saved_dict = {
-            "student_actor_state_dict": self.actor.state_dict(),
-            "student_critic_state_dict": self.critic.state_dict(),
-            "student_optimizer_state_dict": self.optimizer.state_dict(),
-            "teacher_state_dict": self.teacher.state_dict(),
-        }
-        if self.rnd:
-            saved_dict["rnd_state_dict"] = self.rnd.state_dict()
-            saved_dict["rnd_optimizer_state_dict"] = self.rnd_optimizer.state_dict()
-        return saved_dict
-
-    def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
-        """Load specified models from a saved dict."""
-        if load_cfg is None and "actor_state_dict" in loaded_dict:
-            # Loading from a PPO / privileged-policy checkpoint: populate teacher and
-            # warm-start student actor MLP + critic from teacher weights.
-            load_cfg = {"teacher": True, "init_student_from_teacher": True, "iteration": False}
-        elif load_cfg is None:
-            # Loading from a PPO distillation checkpoint (resume training or inference).
-            load_cfg = {
-                "actor": True,
-                "critic": True,
-                "teacher": True,
-                "optimizer": True,
-                "iteration": True,
-            }
-
-        # Load the specified models
-        if load_cfg.get("actor"):
-            self.actor.load_state_dict(loaded_dict["student_actor_state_dict"], strict=strict)
-        if load_cfg.get("critic"):
-            self.critic.load_state_dict(loaded_dict["student_critic_state_dict"], strict=strict)
-        if load_cfg.get("optimizer"):
-            self.optimizer.load_state_dict(loaded_dict["student_optimizer_state_dict"])
-        if load_cfg.get("rnd") and self.rnd:
-            self.rnd.load_state_dict(loaded_dict["rnd_state_dict"], strict=strict)
-            self.rnd_optimizer.load_state_dict(loaded_dict["rnd_optimizer_state_dict"])
-        teacher_dict = loaded_dict.get("teacher_state_dict") or loaded_dict["actor_state_dict"]
-        if load_cfg.get("teacher"):
-            self.teacher.load_state_dict(teacher_dict, strict=strict)
-            self.teacher_loaded = True
-        if load_cfg.get("init_student_from_teacher"):
-            # Copy shared MLP weights (mlp, distribution) from teacher to student actor.
-            # The encoder is excluded — different architecture (TCN vs VAE), learned from scratch.
-            student_dict = self.actor.state_dict()
-            for key, value in teacher_dict.items():
-                if key.startswith("mlp.") or key.startswith("distribution."):
-                    if key in student_dict and student_dict[key].shape == value.shape:
-                        student_dict[key] = value
-            self.actor.load_state_dict(student_dict, strict=False)
-            # Warm-start critic from teacher checkpoint if available
-            critic_src = loaded_dict.get("critic_state_dict")
-            if critic_src is not None:
-                self.critic.load_state_dict(critic_src, strict=strict)
-
-        return load_cfg.get("iteration", False)
+    #     return load_cfg.get("iteration", False)
 
     def get_teacher(self) -> MLPModel:
         """Return the teacher model."""
