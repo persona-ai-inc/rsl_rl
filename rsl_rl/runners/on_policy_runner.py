@@ -50,6 +50,10 @@ class OnPolicyRunner:
             gpu_global_rank=self.gpu_global_rank,
             device=self.device,
         )
+        # Create the model directory
+        self.model_dir = os.path.join(log_dir, "models") if log_dir is not None else None
+        if self.model_dir is not None and not os.path.exists(self.model_dir):
+            os.makedirs(self.model_dir, exist_ok=True)
 
         self.current_learning_iteration = 0
 
@@ -129,11 +133,11 @@ class OnPolicyRunner:
 
             # Save model
             if self.logger.writer is not None and it % self.cfg["save_interval"] == 0:
-                self.save(os.path.join(self.logger.log_dir, f"model_{it}.pt"))  # type: ignore
+                self.save(os.path.join(self.model_dir, f"model_{it}.pt"))  # type: ignore
 
         # Save the final model after training and stop the logging writer
         if self.logger.writer is not None:
-            self.save(os.path.join(self.logger.log_dir, f"model_{self.current_learning_iteration}.pt"))  # type: ignore
+            self.save(os.path.join(self.model_dir, f"model_{self.current_learning_iteration}.pt"))  # type: ignore
             self.logger.stop_logging_writer()
 
     def save(self, path: str, infos: dict | None = None) -> None:
