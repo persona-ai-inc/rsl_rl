@@ -203,6 +203,9 @@ class PPO:
         mean_rnd_loss = 0 if self.rnd else None
         # Symmetry loss
         mean_symmetry_loss = 0 if self.symmetry else None
+        # Compose aux losses (joint + separate). Keyed by loss-term name; lazily
+        # populated since we don't know which losses the policy will report.
+        mean_aux_losses: dict[str, float] = {}
 
         # Get mini batch generator
         if self.policy.is_recurrent:
@@ -320,8 +323,9 @@ class PPO:
             # backbone). hasattr-gated so standard ActorCritic is unaffected.
             if hasattr(self.policy, "extra_losses"):
                 extra_loss_dict = self.policy.extra_losses(obs_batch, {"returns": returns_batch})
-                for _name, extra_loss in extra_loss_dict.items():
+                for aux_name, extra_loss in extra_loss_dict.items():
                     loss = loss + extra_loss
+                    mean_aux_losses[aux_name] = mean_aux_losses.get(aux_name, 0.0) + extra_loss.item()
 
             # Symmetry loss
             if self.symmetry:
@@ -391,7 +395,10 @@ class PPO:
                 self.rnd_optimizer.step()
             # Compose hook: separate-optimizer aux losses do their own forward/backward/step.
             if hasattr(self.policy, "extras_step"):
-                self.policy.extras_step(obs_batch)
+                separate_aux_scalars = self.policy.extras_step(obs_batch)
+                if separate_aux_scalars:
+                    for aux_name, aux_value in separate_aux_scalars.items():
+                        mean_aux_losses[aux_name] = mean_aux_losses.get(aux_name, 0.0) + aux_value
 
             # Store the losses
             mean_value_loss += value_loss.item()
@@ -427,6 +434,8 @@ class PPO:
             loss_dict["rnd"] = mean_rnd_loss
         if self.symmetry:
             loss_dict["symmetry"] = mean_symmetry_loss
+        for aux_name, aux_total in mean_aux_losses.items():
+            loss_dict[aux_name] = aux_total / num_updates
 
         return loss_dict
 
