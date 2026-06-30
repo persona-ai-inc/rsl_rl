@@ -110,7 +110,8 @@ class MLPAutoEncoderModel(MLPEncoderModel):
         hidden_state: HiddenState = None,
         stochastic_output: bool = False,
     ) -> torch.Tensor:
-        """Forward pass that also re-runs the encoder and decoder for the reconstruction loss.
+        """Forward pass of the MLP model with cached encoder state.
+        Forward pass re-runs the encoder and decoder for the reconstruction loss.
 
         During ``update()``, this is the entry point (not ``get_latent``). The parent
         implementation uses the cached ``encoder_state`` from the rollout buffer for the policy
@@ -120,6 +121,7 @@ class MLPAutoEncoderModel(MLPEncoderModel):
         # Unpad if needed (same as parent)
         obs = unpad_trajectories(obs, masks) if masks is not None and not self.is_recurrent else obs
 
+        # TODO: check if this is right
         # decode privileged state to compute auxiliary loss
         encoder_obs = torch.cat([obs[g] for g in self.encoder_obs_groups], dim=-1)
         encoder_obs_normalized = self.encoder_obs_normalizer(encoder_obs)

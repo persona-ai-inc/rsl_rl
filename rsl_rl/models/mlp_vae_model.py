@@ -162,7 +162,8 @@ class MLPVAEModel(MLPAutoEncoderModel):
         hidden_state: HiddenState = None,
         stochastic_output: bool = False,
     ) -> torch.Tensor:
-        """Forward pass for the PPO update step.
+        """Forward pass of the MLP model with cached encoder state.
+        Forward pass re-runs the encoder and decoder for the reconstruction loss.
 
         Re-runs the VAE encoder on the current batch to obtain fresh ``(mu, log_var)``,
         samples ``z`` for the decoder reconstruction, and caches both for the KL loss.
@@ -193,7 +194,7 @@ class MLPVAEModel(MLPAutoEncoderModel):
         """Return ``(mu, log_var)`` from the most recent :meth:`forward_encoder` call.
 
         Returns ``None`` before the first forward pass. Intended for use by
-        :class:`~rsl_rl.algorithms.PPOVAE` to compute the KL divergence loss.
+        :class:`~rsl_rl.algorithms.losses.VAEKLLoss` to compute the KL divergence loss.
         """
         if self.mu is None or self.log_var is None:
             return None

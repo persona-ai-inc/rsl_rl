@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 from tensordict import TensorDict
 
+from rsl_rl.algorithms.losses import AuxLossContext, reject_legacy_loss_kwargs, resolve_aux_losses
 from rsl_rl.env import VecEnv
 from rsl_rl.models import MLPModel
 from rsl_rl.storage import RolloutStorage
@@ -42,6 +43,7 @@ class Distillation:
         device: str = "cpu",
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
+        aux_losses: list | None = None,
         **kwargs: dict,  # handle unused config parameters
     ) -> None:
         """Initialize the algorithm with models, storage, and optimization settings."""
@@ -62,11 +64,6 @@ class Distillation:
         self.teacher = teacher.to(self.device)
         for param in self.teacher.parameters():
             param.requires_grad_(False)
-
-        # Handles to the uncompiled modules for state_dict operations and export. If compilation is disabled, these
-        # simply alias ``self.student`` / ``self.teacher``.
-        self._raw_student = self.student
-        self._raw_teacher = self.teacher
 
         # Handles to the uncompiled modules for state_dict operations and export. If compilation is disabled, these
         # simply alias ``self.student`` / ``self.teacher``.
@@ -96,6 +93,10 @@ class Distillation:
             self.loss_fn = loss_fn_dict[loss_type]
         else:
             raise ValueError(f"Unknown loss type: {loss_type}. Supported types are: {list(loss_fn_dict.keys())}")
+
+        # Optional composable auxiliary losses (e.g. encoder / decoder matching). The behavior-cloning loss
+        # above is always on; these are added on top of it and each self-guards on the model backend.
+        self.aux_losses = aux_losses if aux_losses is not None else []
 
         self.num_updates = 0
 
@@ -135,9 +136,8 @@ class Distillation:
     def update(self) -> dict[str, float]:
         """Run optimization epochs over stored batches and return mean losses."""
         self.num_updates += 1
-        mean_behavior_loss = 0
-        mean_encoder_reconstruction_loss = 0
-        mean_decoder_loss = 0
+        mean_behavior_loss = 0.0
+        mean_aux_losses = {aux.name: 0.0 for aux in self.aux_losses}
         loss = 0
         cnt = 0
 
@@ -149,28 +149,30 @@ class Distillation:
                 # Inference of the student for gradient computation
                 actions = self.student(batch.observations)
 
-                # Behavior cloning loss
+                # Behavior cloning loss (the core distillation signal; always on)
                 behavior_loss = self.loss_fn(actions, batch.privileged_actions)
-
-                # Encoder reconstruction loss
-                encoder_reconstruction_loss = 0
-                if batch.encoder_state is not None and batch.privileged_encoder_state is not None:
-                    encoder_state = self.student.get_encoder_state()
-                    encoder_reconstruction_loss = self.loss_fn(encoder_state, batch.privileged_encoder_state)
-
-                # Decoder matching loss
-                decoder_loss = 0
-                if batch.encoder_state is not None and batch.privileged_encoder_state is not None:
-                    with torch.no_grad():
-                        teacher_decoder_output = self.teacher.get_decoder_inference(batch.privileged_encoder_state)
-                    student_decoder_output = self.teacher.get_decoder_inference(encoder_state)
-                    decoder_loss = self.loss_fn(student_decoder_output, teacher_decoder_output)
-
-                # Total loss
-                loss = loss + behavior_loss + encoder_reconstruction_loss + decoder_loss
+                loss = loss + behavior_loss
                 mean_behavior_loss += behavior_loss.item()
-                mean_encoder_reconstruction_loss += encoder_reconstruction_loss.item()
-                mean_decoder_loss += decoder_loss.item()
+
+                # Auxiliary losses (e.g. encoder / decoder matching). Each self-guards on the model
+                # backend / rollout buffer, so an inapplicable term is a silent no-op.
+                if self.aux_losses:
+                    aux_ctx = AuxLossContext(
+                        actor=self.student,
+                        critic=None,  # distillation has no critic
+                        teacher=self.teacher,
+                        batch=batch,
+                        distribution_params=(actions,),
+                        original_batch_size=actions.shape[0],
+                        device=self.device,
+                    )
+                    for aux in self.aux_losses:
+                        if not aux.is_applicable(aux_ctx):
+                            continue
+                        raw_loss = aux.compute(aux_ctx)
+                        loss = loss + aux.coefficient(self.num_updates) * raw_loss
+                        mean_aux_losses[aux.name] += raw_loss.item()
+
                 cnt += 1
 
                 # Gradient step
@@ -191,18 +193,14 @@ class Distillation:
                 self.student.detach_hidden_state(batch.dones.view(-1))
 
         mean_behavior_loss /= cnt
-        mean_encoder_reconstruction_loss /= cnt
-        mean_decoder_loss /= cnt
         self.storage.clear()
         self.last_hidden_states = (self.student.get_hidden_state(), self.teacher.get_hidden_state())
         self.student.detach_hidden_state()
 
         # Construct the loss dictionary
-        loss_dict = {
-            "behavior": mean_behavior_loss,
-            "encoder_reconstruction": mean_encoder_reconstruction_loss,
-            "decoder_reconstruction": mean_decoder_loss,
-        }
+        loss_dict = {"behavior": mean_behavior_loss}
+        for name, value in mean_aux_losses.items():
+            loss_dict[name] = value / cnt
 
         return loss_dict
 
@@ -289,6 +287,13 @@ class Distillation:
         if cfg["algorithm"].get("symmetry_cfg") is not None:
             raise ValueError("The symmetry extension is not compatible with Distillation.")
         cfg["algorithm"]["symmetry_cfg"] = None
+
+        # Behavior-cloning keeps the algorithm-level ``loss_type``; preserve it across the legacy-kwarg
+        # rejection (which otherwise flags ``loss_type``), then resolve the composable auxiliary losses.
+        behavior_loss_type = cfg["algorithm"].pop("loss_type", "mse")
+        reject_legacy_loss_kwargs(cfg["algorithm"])
+        cfg["algorithm"]["loss_type"] = behavior_loss_type
+        cfg["algorithm"]["aux_losses"] = resolve_aux_losses(cfg["algorithm"])
 
         # Initialize the policy
         student: MLPModel = student_class(obs, cfg["obs_groups"], "student", env.num_actions, **cfg["student"]).to(

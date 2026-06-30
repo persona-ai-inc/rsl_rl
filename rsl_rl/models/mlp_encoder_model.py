@@ -103,7 +103,7 @@ class MLPEncoderModel(MLPModel):
         hidden_state: HiddenState = None,
         stochastic_output: bool = False,
     ) -> torch.Tensor:
-        """Forward pass of the MLP model.
+        """Forward pass of the MLP model with cached encoder state.
 
         ..note::
             The `stochastic_output` flag only has an effect if the model has a distribution (i.e., ``distribution_cfg``

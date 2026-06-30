@@ -11,6 +11,13 @@ import torch.nn as nn
 from itertools import chain
 from tensordict import TensorDict
 
+from rsl_rl.algorithms.losses import (
+    AuxiliaryLoss,
+    AuxLossContext,
+    build_scheduler,
+    reject_legacy_loss_kwargs,
+    resolve_aux_losses,
+)
 from rsl_rl.env import VecEnv
 from rsl_rl.extensions import RandomNetworkDistillation, Symmetry, resolve_rnd_config, resolve_symmetry_config
 from rsl_rl.models import MLPModel
@@ -57,6 +64,9 @@ class PPO:
         symmetry_cfg: dict | None = None,
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
+        # Auxiliary losses
+        aux_losses: list[AuxiliaryLoss] | None = None,
+        ppo_weight_schedule: dict | None = None,
     ) -> None:
         """Initialize the algorithm with models, storage, and optimization settings."""
         # Device-related parameters
@@ -111,6 +121,15 @@ class PPO:
         self.schedule = schedule
         self.learning_rate = learning_rate
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
+
+        # Auxiliary losses: composable, self-guarding extra loss terms added to the PPO objective.
+        self.aux_losses: list[AuxiliaryLoss] = aux_losses if aux_losses is not None else []
+        # Optional schedule on the PPO term itself (defaults to a constant weight of 1.0, i.e. no
+        # change to the objective). Used together with a decaying imitation-loss schedule to trade
+        # off RL vs. distillation over training.
+        self.ppo_weight_scheduler = build_scheduler(1.0, ppo_weight_schedule)
+        # Training-iteration counter that drives loss schedules.
+        self.current_iteration = 0
 
     def act(self, obs: TensorDict) -> torch.Tensor:
         """Sample actions and store transition data."""
@@ -199,6 +218,8 @@ class PPO:
         mean_rnd_loss = 0 if self.rnd else None
         # Symmetry loss
         mean_symmetry_loss = 0 if self.symmetry else None
+        # Auxiliary losses
+        mean_aux_losses = {aux.name: 0.0 for aux in self.aux_losses}
 
         # Get mini-batch generator
         if self.actor.is_recurrent or self.critic.is_recurrent:
@@ -287,7 +308,11 @@ class PPO:
             else:
                 value_loss = (batch.returns - values).pow(2).mean()
 
-            loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy.mean()
+            # PPO term, optionally re-weighted by a schedule (constant 1.0 by default).
+            ppo_weight = self.ppo_weight_scheduler(self.current_iteration) if self.ppo_weight_scheduler else 1.0
+            loss = ppo_weight * (
+                surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy.mean()
+            )
 
             # RND loss
             rnd_loss = self.rnd.compute_loss(batch.observations[:original_batch_size]) if self.rnd else None  # type: ignore
@@ -297,6 +322,24 @@ class PPO:
                 symmetry_loss = self.symmetry.compute_loss(self.actor, batch, original_batch_size)
                 if self.symmetry.use_mirror_loss:
                     loss = loss + self.symmetry.mirror_loss_coeff * symmetry_loss
+
+            # Auxiliary losses (composable; each self-guards on the model backend / rollout buffer).
+            if self.aux_losses:
+                aux_ctx = AuxLossContext(
+                    actor=self.actor,
+                    critic=self.critic,
+                    teacher=getattr(self, "teacher", None),
+                    batch=batch,
+                    distribution_params=distribution_params,
+                    original_batch_size=original_batch_size,
+                    device=self.device,
+                )
+                for aux in self.aux_losses:
+                    if not aux.is_applicable(aux_ctx):
+                        continue
+                    raw_loss = aux.compute(aux_ctx)
+                    loss = loss + aux.coefficient(self.current_iteration) * raw_loss
+                    mean_aux_losses[aux.name] += raw_loss.item()
 
             # Compute the gradients for PPO
             self.optimizer.zero_grad()
@@ -349,9 +392,17 @@ class PPO:
             loss_dict["rnd"] = mean_rnd_loss
         if self.symmetry:
             loss_dict["symmetry"] = mean_symmetry_loss
+        for name, value in mean_aux_losses.items():
+            loss_dict[name] = value / num_updates
+        # Surface the PPO-term weight only when a schedule is active (e.g. a distillation curriculum).
+        if self.ppo_weight_scheduler is not None:
+            loss_dict["weight_ppo"] = self.ppo_weight_scheduler(self.current_iteration)
 
         # Clear the storage
         self.storage.clear()
+
+        # Advance the iteration counter for loss schedules
+        self.current_iteration += 1
 
         return loss_dict
 
@@ -439,6 +490,10 @@ class PPO:
 
         # Resolve symmetry config if used
         cfg["algorithm"] = resolve_symmetry_config(cfg["algorithm"], env)
+
+        # Reject removed per-loss kwargs, then resolve auxiliary losses (specs -> instances)
+        reject_legacy_loss_kwargs(cfg["algorithm"])
+        cfg["algorithm"]["aux_losses"] = resolve_aux_losses(cfg["algorithm"])
 
         # Initialize the policy
         actor: MLPModel = actor_class(obs, cfg["obs_groups"], "actor", env.num_actions, **cfg["actor"]).to(device)
