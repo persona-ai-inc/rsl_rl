@@ -88,7 +88,7 @@ class Logger:
                     stacklevel=2,
                 )
                 self.logger_type = "WandbLogWriter"
-                logger_cfg = {"project_name": self.cfg.get("wandb_project")}
+                logger_cfg = {"project_name": self.cfg.get("wandb_project"), "cfg": self.cfg}
             elif self.logger_type == "neptune" and isinstance(logger_cfg, str):
                 warnings.warn(
                     "cfg['logger'] = 'neptune' is deprecated. "
