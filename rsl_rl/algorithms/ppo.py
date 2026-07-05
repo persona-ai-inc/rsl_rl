@@ -56,6 +56,8 @@ class PPO:
         rnd_cfg: dict | None = None,
         # Symmetry parameters
         symmetry_cfg: dict | None = None,
+        # Aux-losses extension (Persona compositional networks)
+        aux: object | None = None,
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
     ) -> None:
@@ -80,6 +82,12 @@ class PPO:
             raise ValueError("Symmetry augmentation is not supported for recurrent policies.")
         self.symmetry = Symmetry(**symmetry_cfg) if symmetry_cfg else None
 
+        # Aux-losses extension (Persona): owns aux-only networks and their separate
+        # optimizers. Contract: compute_joint_losses(batch, n) -> dict[str, Tensor],
+        # step_separate_losses(batch, n) -> dict[str, float], joint_parameters(),
+        # train()/eval(), save() -> dict, load(dict, strict), parameters().
+        self.aux = aux
+
         # PPO components
         self.actor = actor.to(self.device)
         self.critic = critic.to(self.device)
@@ -90,8 +98,14 @@ class PPO:
         self._raw_critic = self.critic
 
         # Create the optimizer
+        # Note: dict.fromkeys dedups parameters shared between models (e.g. shared encoders,
+        # share_cnn_encoders) while preserving order. Joint-mode aux parameters (networks
+        # trained by aux losses through the main backward pass) join the same optimizer.
+        optimizer_params = chain(self.actor.parameters(), self.critic.parameters())
+        if self.aux is not None:
+            optimizer_params = chain(optimizer_params, self.aux.joint_parameters())
         self.optimizer = resolve_optimizer(optimizer)(
-            chain(self.actor.parameters(), self.critic.parameters()), lr=learning_rate
+            dict.fromkeys(optimizer_params), lr=learning_rate
         )  # type: ignore
 
         # Add storage
@@ -197,6 +211,8 @@ class PPO:
         mean_rnd_loss = 0 if self.rnd else None
         # Symmetry loss
         mean_symmetry_loss = 0 if self.symmetry else None
+        # Aux losses (Persona): keyed by loss-term name, lazily populated
+        mean_aux_losses: dict[str, float] = {}
 
         # Get mini-batch generator
         if self.actor.is_recurrent or self.critic.is_recurrent:
@@ -287,6 +303,14 @@ class PPO:
                 if self.symmetry.use_mirror_loss:
                     loss = loss + self.symmetry.mirror_loss_coeff * symmetry_loss
 
+            # Aux joint losses (Persona): summed into the main loss so shared parameters
+            # (e.g. an encoder feeding both actor and a reconstruction decoder) receive
+            # gradients from both objectives in one backward pass.
+            if self.aux is not None:
+                for aux_name, aux_loss in self.aux.compute_joint_losses(batch, original_batch_size).items():
+                    loss = loss + aux_loss
+                    mean_aux_losses[aux_name] = mean_aux_losses.get(aux_name, 0.0) + aux_loss.item()
+
             # Compute the gradients for PPO
             self.optimizer.zero_grad()
             loss.backward()
@@ -306,6 +330,11 @@ class PPO:
             # Apply the gradients for RND
             if self.rnd:
                 self.rnd.optimizer.step()
+            # Aux separate-optimizer losses (Persona): own forward/backward/step per term
+            # (RND pattern); the extension all-reduces its own gradients when multi-GPU.
+            if self.aux is not None:
+                for aux_name, aux_value in self.aux.step_separate_losses(batch, original_batch_size).items():
+                    mean_aux_losses[aux_name] = mean_aux_losses.get(aux_name, 0.0) + aux_value
 
             # Store the losses
             mean_value_loss += value_loss.item()
@@ -338,6 +367,8 @@ class PPO:
             loss_dict["rnd"] = mean_rnd_loss
         if self.symmetry:
             loss_dict["symmetry"] = mean_symmetry_loss
+        for aux_name, aux_total in mean_aux_losses.items():
+            loss_dict[aux_name] = aux_total / num_updates
 
         # Clear the storage
         self.storage.clear()
@@ -350,6 +381,8 @@ class PPO:
         self.critic.train()
         if self.rnd:
             self.rnd.train()
+        if self.aux is not None:
+            self.aux.train()
 
     def eval_mode(self) -> None:
         """Set evaluation mode for learnable models."""
@@ -357,6 +390,8 @@ class PPO:
         self.critic.eval()
         if self.rnd:
             self.rnd.eval()
+        if self.aux is not None:
+            self.aux.eval()
 
     def save(self) -> dict:
         """Return a dict of all models for saving."""
@@ -368,6 +403,8 @@ class PPO:
         if self.rnd:
             saved_dict["rnd_state_dict"] = self.rnd.state_dict()
             saved_dict["rnd_optimizer_state_dict"] = self.rnd.optimizer.state_dict()
+        if self.aux is not None:
+            saved_dict["aux_state_dict"] = self.aux.save()
         return saved_dict
 
     def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
@@ -380,6 +417,7 @@ class PPO:
                 "optimizer": True,
                 "iteration": True,
                 "rnd": True,
+                "aux": True,
             }
 
         # Load the specified models
@@ -392,6 +430,8 @@ class PPO:
         if load_cfg.get("rnd") and self.rnd:
             self.rnd.load_state_dict(loaded_dict["rnd_state_dict"], strict=strict)
             self.rnd.optimizer.load_state_dict(loaded_dict["rnd_optimizer_state_dict"])
+        if load_cfg.get("aux") and self.aux is not None and "aux_state_dict" in loaded_dict:
+            self.aux.load(loaded_dict["aux_state_dict"], strict=strict)
         return load_cfg.get("iteration", False)
 
     def get_policy(self) -> MLPModel:
@@ -454,6 +494,8 @@ class PPO:
         model_params = [self._raw_actor.state_dict(), self._raw_critic.state_dict()]
         if self.rnd:
             model_params.append(self.rnd.predictor.state_dict())
+        if self.aux is not None:
+            model_params.append(self.aux.state_dict())
         # Broadcast the model parameters
         torch.distributed.broadcast_object_list(model_params, src=0)
         # Load the model parameters on all GPUs from source GPU
@@ -461,6 +503,8 @@ class PPO:
         self._raw_critic.load_state_dict(model_params[1])
         if self.rnd:
             self.rnd.predictor.load_state_dict(model_params[2])
+        if self.aux is not None:
+            self.aux.load_state_dict(model_params[-1])
 
     def reduce_parameters(self) -> None:
         """Collect gradients from all GPUs and average them.
@@ -468,10 +512,15 @@ class PPO:
         This function is called after the backward pass to synchronize the gradients across all GPUs.
         """
         # Create a tensor to store the gradients
+        # Note: dict.fromkeys dedups parameters shared between models so each gradient is
+        # reduced exactly once. Joint-mode aux parameters ride the main backward pass and
+        # are reduced here; separate-optimizer aux parameters are reduced by the extension.
         all_params = chain(self.actor.parameters(), self.critic.parameters())
         if self.rnd:
             all_params = chain(all_params, self.rnd.parameters())
-        all_params = list(all_params)
+        if self.aux is not None:
+            all_params = chain(all_params, self.aux.joint_parameters())
+        all_params = list(dict.fromkeys(all_params))
         grads = [param.grad.view(-1) for param in all_params if param.grad is not None]
         all_grads = torch.cat(grads)
         # Average the gradients across all GPUs
