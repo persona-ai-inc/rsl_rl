@@ -397,6 +397,11 @@ class PPO:
         # Surface the PPO-term weight only when a schedule is active (e.g. a distillation curriculum).
         if self.ppo_weight_scheduler is not None:
             loss_dict["weight_ppo"] = self.ppo_weight_scheduler(self.current_iteration)
+        # Surface each auxiliary loss's (possibly scheduled) weight, mirroring weight_ppo. Only losses
+        # with an active schedule are logged, to avoid cluttering with constant coefficients.
+        for aux in self.aux_losses:
+            if aux.is_scheduled:
+                loss_dict[f"weight_{aux.name}"] = aux.coefficient(self.current_iteration)
 
         # Clear the storage
         self.storage.clear()

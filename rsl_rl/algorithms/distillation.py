@@ -201,6 +201,10 @@ class Distillation:
         loss_dict = {"behavior": mean_behavior_loss}
         for name, value in mean_aux_losses.items():
             loss_dict[name] = value / cnt
+        # Surface each auxiliary loss's (possibly scheduled) weight; only schedule-driven ones are logged.
+        for aux in self.aux_losses:
+            if aux.is_scheduled:
+                loss_dict[f"weight_{aux.name}"] = aux.coefficient(self.num_updates)
 
         return loss_dict
 

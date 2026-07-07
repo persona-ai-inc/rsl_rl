@@ -176,10 +176,8 @@ class PPODistillation(PPO):
 
     def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
         """Load specified models from a saved dict."""
-        if load_cfg is None and any("actor_state_dict" in k for k in loaded_dict):
-            # Loading from a PPO / privileged-policy checkpoint: only populate teacher
-            load_cfg = {"teacher": True, "iteration": False}  # Only load teacher by default
-        elif load_cfg is None: # Load from distillation training (inference)
+        if load_cfg is None and any("teacher_state_dict" in k for k in loaded_dict):
+            # Loading from a PPO distillation checkpoint (resume training or inference)
             load_cfg = {
                 "actor": True,
                 "critic": True,
@@ -187,6 +185,9 @@ class PPODistillation(PPO):
                 "optimizer": True,
                 "iteration": True,
             }
+        elif load_cfg is None and any("actor_state_dict" in k for k in loaded_dict):
+            # Loading from a PPO / privileged-policy checkpoint: only populate teacher
+            load_cfg = {"teacher": True, "iteration": False}
         load_iteration = super().load(loaded_dict, load_cfg, strict)
 
         if load_cfg.get("teacher"):

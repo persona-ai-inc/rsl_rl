@@ -64,7 +64,9 @@ def build_scheduler(initial_value: float, schedule: dict | None) -> Callable[[in
     Mirrors the constant/step/linear schedules used by RND (:mod:`rsl_rl.extensions.rnd`).
 
     Args:
-        initial_value: Value before / at the start of the schedule (the loss coefficient).
+        initial_value: Default starting value of the schedule (typically the loss ``coef``, or the
+            hardcoded ``1.0`` for the PPO weight). The schedule dict may override it via an explicit
+            ``"initial_value"`` key — needed e.g. to ramp the PPO weight up from ``0.0``.
         schedule: Schedule config dict with a ``"mode"`` key, or ``None`` for a constant value.
             Supported modes:
 
@@ -80,6 +82,10 @@ def build_scheduler(initial_value: float, schedule: dict | None) -> Callable[[in
         return None
 
     mode = schedule["mode"]
+    # The schedule dict may override the (positional) default starting value. This lets callers that
+    # pass a fixed initial_value -- e.g. PPO's ppo_weight_scheduler, built with 1.0 -- still ramp from
+    # a different start such as 0.0 via {"initial_value": 0.0, ...}.
+    initial_value = schedule.get("initial_value", initial_value)
 
     if mode == "constant":
         return lambda step: initial_value
@@ -175,6 +181,11 @@ class AuxiliaryLoss:
         """Return the (possibly scheduled) coefficient for the given training iteration."""
         return self._scheduler(iteration) if self._scheduler is not None else self.coef
 
+    @property
+    def is_scheduled(self) -> bool:
+        """Whether this loss has an active weight schedule (vs. a constant coefficient)."""
+        return self._scheduler is not None
+
 
 class _RegressionAuxiliaryLoss(AuxiliaryLoss):
     """Base for auxiliary losses that regress one tensor onto another (``mse``/``huber``)."""
@@ -260,8 +271,12 @@ class ImitationLoss(_RegressionAuxiliaryLoss):
         return ctx.teacher is not None and getattr(ctx.batch, "privileged_actions", None) is not None
 
     def compute(self, ctx: AuxLossContext) -> torch.Tensor:
-        # distribution_params[0] is the mean for a Gaussian distribution.
-        student_actions_mean = ctx.distribution_params[0]
+        # The policy's mean action via ``output_mean`` (== distribution.mean) is the distribution-agnostic
+        # action target: it equals the deterministic forward ``model(obs)`` used by the standalone
+        # Distillation algorithm for every distribution, whereas ``distribution_params[0]`` is only the
+        # action mean for a Gaussian (e.g. for Beta it is the raw ``alpha`` parameter). Sliced to the
+        # pre-symmetry batch so it lines up with ``privileged_actions``.
+        student_actions_mean = ctx.actor.output_mean[: ctx.original_batch_size]
         return self.loss_fn(student_actions_mean, ctx.batch.privileged_actions)
 
 
