@@ -189,7 +189,7 @@ class OnPolicyRunner:
             decoder_save_path = os.path.join(path, "decoder.pt")
             traced_decoder = torch.jit.script(decoder_jit_model)
             traced_decoder.save(decoder_save_path)
-        
+
         # export teacher decoder if present
         if hasattr(self.alg, "get_teacher") and hasattr(self.alg.get_teacher(), "as_jit_decoder"): # type: ignore
             decoder_jit_model = self.alg.get_teacher().as_jit_decoder() # type: ignore
@@ -209,6 +209,8 @@ class OnPolicyRunner:
         save_path = os.path.join(path, filename)
 
         # Trace and save the model
+        # external_data=False keeps the weights embedded in the .onnx file; torch >= 2.9
+        # otherwise writes them to a separate .onnx.data sidecar by default.
         torch.onnx.export(
             onnx_model,
             onnx_model.get_dummy_inputs(),  # type: ignore
@@ -218,6 +220,7 @@ class OnPolicyRunner:
             verbose=verbose,
             input_names=onnx_model.input_names,  # type: ignore
             output_names=onnx_model.output_names,  # type: ignore
+            external_data=False,
         )
 
         # Export decoder if present
@@ -235,8 +238,9 @@ class OnPolicyRunner:
                 verbose=verbose,
                 input_names=decoder_onnx_model.input_names,  # type: ignore
                 output_names=decoder_onnx_model.output_names,  # type: ignore
+                external_data=False,
             )
-        
+
         # Export teacher decoder if present
         if hasattr(self.alg, "get_teacher") and hasattr(self.alg.get_teacher(), "as_onnx_decoder"): # type: ignore
             decoder_onnx_model = self.alg.get_teacher().as_onnx_decoder(verbose=verbose) # type: ignore
@@ -252,6 +256,7 @@ class OnPolicyRunner:
                 verbose=verbose,
                 input_names=decoder_onnx_model.input_names,  # type: ignore
                 output_names=decoder_onnx_model.output_names,  # type: ignore
+                external_data=False,
             )
 
     def add_git_repo_to_log(self, repo_file_path: str) -> None:
