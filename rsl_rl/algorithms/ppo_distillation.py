@@ -239,6 +239,8 @@ class PPODistillation(PPO):
         device: str = "cpu",
         rnd_cfg: dict | None = None,
         symmetry_cfg: dict | None = None,
+        # Aux-losses extension (Persona compositional networks)
+        aux: object | None = None,
         multi_gpu_cfg: dict | None = None,
         # Distillation parameters
         distillation_loss_coef: float = 1.0,
@@ -271,6 +273,7 @@ class PPODistillation(PPO):
             device: Torch device string.
             rnd_cfg: Optional Random Network Distillation configuration dict.
             symmetry_cfg: Optional symmetry augmentation configuration dict.
+            aux: Optional aux-losses extension (see :class:`~rsl_rl.algorithms.ppo.PPO`).
             multi_gpu_cfg: Optional multi-GPU configuration dict.
             distillation_loss_coef: Base weight of the imitation (behavior-cloning) loss; the
                 starting value for ``distillation_weight_schedule`` when one is given.
@@ -301,6 +304,7 @@ class PPODistillation(PPO):
             device=device,
             rnd_cfg=rnd_cfg,
             symmetry_cfg=symmetry_cfg,
+            aux=aux,
             multi_gpu_cfg=multi_gpu_cfg,
         )
 
@@ -324,9 +328,6 @@ class PPODistillation(PPO):
         )
         self.current_iteration = 0
 
-    # ------------------------------------------------------------------
-    # Rollout collection
-    # ------------------------------------------------------------------
 
     def act(self, obs: TensorDict) -> torch.Tensor:
         """Sample student actions and record the teacher's privileged action."""
@@ -355,6 +356,8 @@ class PPODistillation(PPO):
         mean_rnd_loss = 0 if self.rnd else None
         # Symmetry loss
         mean_symmetry_loss = 0 if self.symmetry else None
+        # Aux losses (Persona): keyed by loss-term name, lazily populated
+        mean_aux_losses: dict[str, float] = {}
 
         # Get mini-batch generator
         if self.actor.is_recurrent or self.critic.is_recurrent:
@@ -455,6 +458,14 @@ class PPODistillation(PPO):
                 if self.symmetry.use_mirror_loss:
                     loss = loss + self.symmetry.mirror_loss_coeff * symmetry_loss
 
+            # Aux joint losses (Persona): summed into the main loss so shared parameters
+            # (e.g. an encoder feeding both student and an aux head) receive gradients
+            # from both objectives in one backward pass.
+            if self.aux is not None:
+                for aux_name, aux_loss in self.aux.compute_joint_losses(batch, original_batch_size).items():
+                    loss = loss + aux_loss
+                    mean_aux_losses[aux_name] = mean_aux_losses.get(aux_name, 0.0) + aux_loss.item()
+
             # Compute the gradients for PPO + distillation
             self.optimizer.zero_grad()
             loss.backward()
@@ -474,6 +485,11 @@ class PPODistillation(PPO):
             # Apply the gradients for RND
             if self.rnd:
                 self.rnd.optimizer.step()
+            # Aux separate-optimizer losses (Persona): own forward/backward/step per term
+            # (RND pattern); the extension all-reduces its own gradients when multi-GPU.
+            if self.aux is not None:
+                for aux_name, aux_value in self.aux.step_separate_losses(batch, original_batch_size).items():
+                    mean_aux_losses[aux_name] = mean_aux_losses.get(aux_name, 0.0) + aux_value
 
             # Store the losses
             mean_value_loss += value_loss.item()
@@ -511,6 +527,8 @@ class PPODistillation(PPO):
             loss_dict["rnd"] = mean_rnd_loss
         if self.symmetry:
             loss_dict["symmetry"] = mean_symmetry_loss
+        for aux_name, aux_total in mean_aux_losses.items():
+            loss_dict[aux_name] = aux_total / num_updates
 
         # Clear the storage
         self.storage.clear()
@@ -543,6 +561,7 @@ class PPODistillation(PPO):
                 "teacher": True,
                 "optimizer": True,
                 "iteration": True,
+                "aux": True,
             }
         elif load_cfg is None and any("actor_state_dict" in k for k in loaded_dict):
             # Loading from a PPO / privileged-policy checkpoint: only populate the teacher
@@ -560,21 +579,6 @@ class PPODistillation(PPO):
     def get_teacher(self) -> MLPModel:
         """Return the teacher model."""
         return self.teacher
-
-    # ------------------------------------------------------------------
-    # Multi-GPU
-    # ------------------------------------------------------------------
-
-    def broadcast_parameters(self) -> None:
-        """Broadcast model parameters to all GPUs (teacher included for consistent init)."""
-        super().broadcast_parameters()
-        model_params = [self.teacher.state_dict()]
-        torch.distributed.broadcast_object_list(model_params, src=0)
-        self.teacher.load_state_dict(model_params[0])
-
-    # ------------------------------------------------------------------
-    # Construction
-    # ------------------------------------------------------------------
 
     @staticmethod
     def construct_algorithm(obs: TensorDict, env: VecEnv, cfg: dict, device: str) -> PPODistillation:
@@ -629,3 +633,10 @@ class PPODistillation(PPO):
         alg.compile(cfg.get("torch_compile_mode"))
 
         return alg
+
+    def broadcast_parameters(self) -> None:
+        """Broadcast model parameters to all GPUs (teacher included for consistent init)."""
+        super().broadcast_parameters()
+        model_params = [self.teacher.state_dict()]
+        torch.distributed.broadcast_object_list(model_params, src=0)
+        self.teacher.load_state_dict(model_params[0])

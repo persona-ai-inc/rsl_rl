@@ -209,3 +209,73 @@ class TestPPODistillationSaveLoad:
         assert load_iteration is False
         for key, value in source_actor_state.items():
             assert torch.equal(alg.teacher.state_dict()[key], value)
+
+
+class _FakeAux:
+    """Minimal aux extension exercising the joint + separate loss hooks (see PPO.aux contract)."""
+
+    def __init__(self) -> None:
+        self.param = torch.nn.Parameter(torch.zeros(1))
+        self.joint_calls = 0
+        self.separate_calls = 0
+        self.train_calls = 0
+        self.eval_calls = 0
+
+    def joint_parameters(self):
+        yield self.param
+
+    def compute_joint_losses(self, batch: object, original_batch_size: int) -> dict[str, torch.Tensor]:
+        self.joint_calls += 1
+        return {"aux_joint": self.param.sum() ** 2 + 1.0}
+
+    def step_separate_losses(self, batch: object, original_batch_size: int) -> dict[str, float]:
+        self.separate_calls += 1
+        return {"aux_separate": 0.5}
+
+    def train(self) -> None:
+        self.train_calls += 1
+
+    def eval(self) -> None:
+        self.eval_calls += 1
+
+    def save(self) -> dict:
+        return {"param": self.param.detach().clone()}
+
+    def load(self, payload: dict, strict: bool = True) -> None:
+        self.param.data.copy_(payload["param"])
+
+
+class TestPPODistillationAux:
+    """Tests for the aux-losses extension hooks wired through PPODistillation.update()."""
+
+    def test_aux_losses_reported_and_trained(self) -> None:
+        aux = _FakeAux()
+        alg, obs = _build_ppo_distillation(aux=aux, num_learning_epochs=1, num_mini_batches=1)
+        alg.train_mode()
+        assert aux.train_calls == 1
+
+        _fill_and_return(alg, obs)
+        loss_dict = alg.update()
+
+        num_updates = alg.num_learning_epochs * alg.num_mini_batches
+        assert aux.joint_calls == num_updates
+        assert aux.separate_calls == num_updates
+        assert "aux_joint" in loss_dict
+        assert loss_dict["aux_separate"] == 0.5
+
+    def test_aux_joint_parameters_join_main_optimizer(self) -> None:
+        aux = _FakeAux()
+        alg, _obs = _build_ppo_distillation(aux=aux)
+        assert any(p is aux.param for group in alg.optimizer.param_groups for p in group["params"])
+
+    def test_save_load_round_trips_aux_state(self) -> None:
+        aux = _FakeAux()
+        alg, _obs = _build_ppo_distillation(aux=aux)
+        aux.param.data.fill_(3.0)
+        saved = alg.save()
+        assert "aux_state_dict" in saved
+
+        aux2 = _FakeAux()
+        alg2, _obs2 = _build_ppo_distillation(aux=aux2)
+        alg2.load(saved, load_cfg=None, strict=True)
+        assert torch.equal(aux2.param, aux.param)
