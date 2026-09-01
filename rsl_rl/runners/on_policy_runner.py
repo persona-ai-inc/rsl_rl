@@ -137,11 +137,11 @@ class OnPolicyRunner:
             )
 
             # Save model
-            if it % self.cfg["save_interval"] == 0:
+            if self.model_dir is not None and it % self.cfg["save_interval"] == 0:
                 self.save(os.path.join(self.model_dir, f"model_{it:0{len(str(total_it))}}.pt"))  # type: ignore
 
         # Save the final model after training
-        if self.logger.log_dir is not None and not self.logger.disable_logs:
+        if self.model_dir is not None and not self.logger.disable_logs:
             self.save(os.path.join(self.model_dir, f"model_{self.current_learning_iteration:0{len(str(total_it))}}.pt"))
 
     def save(self, path: str, infos: dict | None = None) -> None:
@@ -209,6 +209,7 @@ class OnPolicyRunner:
             verbose=verbose,
             input_names=onnx_model.input_names,  # type: ignore
             output_names=onnx_model.output_names,  # type: ignore
+            external_data=False,
         )
 
     def add_git_repo_to_log(self, repo_file_path: str) -> None:
