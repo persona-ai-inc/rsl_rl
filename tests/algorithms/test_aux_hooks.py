@@ -8,8 +8,8 @@
 from __future__ import annotations
 
 import torch
+from collections.abc import Iterable
 from tensordict import TensorDict
-from typing import Iterable
 
 from rsl_rl.algorithms.ppo import PPO
 from rsl_rl.models import MLPModel
@@ -90,6 +90,7 @@ class TestAuxIterationHook:
     """The runner's learning iteration must reach both aux hooks."""
 
     def test_iteration_forwarded_to_both_hooks(self) -> None:
+        """Every mini-batch call in one update sees the iteration the runner passed."""
         aux = _RecordingAux()
         ppo, obs = _build_ppo(aux)
         _fill_and_return(ppo, obs)
