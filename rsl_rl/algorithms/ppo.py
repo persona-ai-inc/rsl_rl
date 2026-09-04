@@ -10,7 +10,6 @@ import torch
 import torch.nn as nn
 from itertools import chain
 from tensordict import TensorDict
-import inspect
 
 from rsl_rl.env import VecEnv
 from rsl_rl.extensions import RandomNetworkDistillation, Symmetry, resolve_rnd_config, resolve_symmetry_config
@@ -104,9 +103,7 @@ class PPO:
         optimizer_params = chain(self.actor.parameters(), self.critic.parameters())
         if self.aux is not None:
             optimizer_params = chain(optimizer_params, self.aux.joint_parameters())
-        self.optimizer = resolve_optimizer(optimizer)(
-            dict.fromkeys(optimizer_params), lr=learning_rate
-        )  # type: ignore
+        self.optimizer = resolve_optimizer(optimizer)(dict.fromkeys(optimizer_params), lr=learning_rate)  # type: ignore
 
         # Add storage
         self.storage = storage
