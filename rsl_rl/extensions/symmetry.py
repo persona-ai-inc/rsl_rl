@@ -59,7 +59,7 @@ class Symmetry:
         # Resolve the augmentation function
         self.data_augmentation_func = resolve_callable(data_augmentation_func)
         if isinstance(self.data_augmentation_func, type):
-            self.data_augmentation_func = self.data_augmentation_func() # instantiate if a class is provided
+            self.data_augmentation_func = self.data_augmentation_func()  # instantiate if a class is provided
 
         # Inform the user if symmetry is configured only for logging
         if not (use_data_augmentation or use_mirror_loss):

@@ -121,8 +121,13 @@ class Distillation:
         # Not needed for distillation
         pass
 
-    def update(self) -> dict[str, float]:
-        """Run optimization epochs over stored batches and return mean losses."""
+    def update(self, iteration: int = 0) -> dict[str, float]:
+        """Run optimization epochs over stored batches and return mean losses.
+
+        Args:
+            iteration: The runner's current learning iteration. Unused here; accepted so every
+                algorithm shares one ``update`` signature.
+        """
         self.num_updates += 1
         mean_behavior_loss = 0
         loss = 0

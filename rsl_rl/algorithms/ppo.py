@@ -10,7 +10,6 @@ import torch
 import torch.nn as nn
 from itertools import chain
 from tensordict import TensorDict
-import inspect
 
 from rsl_rl.env import VecEnv
 from rsl_rl.extensions import RandomNetworkDistillation, Symmetry, resolve_rnd_config, resolve_symmetry_config
@@ -83,9 +82,10 @@ class PPO:
         self.symmetry = Symmetry(**symmetry_cfg) if symmetry_cfg else None
 
         # Aux-losses extension (Persona): owns aux-only networks and their separate
-        # optimizers. Contract: compute_joint_losses(batch, n) -> dict[str, Tensor],
-        # step_separate_losses(batch, n) -> dict[str, float], joint_parameters(),
+        # optimizers. Contract: compute_joint_losses(batch, n, iteration) -> dict[str, Tensor],
+        # step_separate_losses(batch, n, iteration) -> dict[str, float], joint_parameters(),
         # train()/eval(), save() -> dict, load(dict, strict), parameters().
+        # ``iteration`` is the runner's learning iteration, so a loss can schedule its weight.
         self.aux = aux
 
         # PPO components
@@ -104,9 +104,7 @@ class PPO:
         optimizer_params = chain(self.actor.parameters(), self.critic.parameters())
         if self.aux is not None:
             optimizer_params = chain(optimizer_params, self.aux.joint_parameters())
-        self.optimizer = resolve_optimizer(optimizer)(
-            dict.fromkeys(optimizer_params), lr=learning_rate
-        )  # type: ignore
+        self.optimizer = resolve_optimizer(optimizer)(dict.fromkeys(optimizer_params), lr=learning_rate)  # type: ignore
 
         # Add storage
         self.storage = storage
@@ -202,8 +200,13 @@ class PPO:
         if not self.normalize_advantage_per_mini_batch:
             st.advantages = (st.advantages - st.advantages.mean()) / (st.advantages.std() + 1e-8)
 
-    def update(self) -> dict[str, float]:
-        """Run optimization epochs over stored batches and return mean losses."""
+    def update(self, iteration: int = 0) -> dict[str, float]:
+        """Run optimization epochs over stored batches and return mean losses.
+
+        Args:
+            iteration: The runner's current learning iteration, forwarded to the aux-losses
+                extension so a loss term can schedule its own weight.
+        """
         mean_value_loss = 0
         mean_surrogate_loss = 0
         mean_entropy = 0
@@ -307,7 +310,7 @@ class PPO:
             # (e.g. an encoder feeding both actor and a reconstruction decoder) receive
             # gradients from both objectives in one backward pass.
             if self.aux is not None:
-                for aux_name, aux_loss in self.aux.compute_joint_losses(batch, original_batch_size).items():
+                for aux_name, aux_loss in self.aux.compute_joint_losses(batch, original_batch_size, iteration).items():
                     loss = loss + aux_loss
                     mean_aux_losses[aux_name] = mean_aux_losses.get(aux_name, 0.0) + aux_loss.item()
 
@@ -333,7 +336,7 @@ class PPO:
             # Aux separate-optimizer losses (Persona): own forward/backward/step per term
             # (RND pattern); the extension all-reduces its own gradients when multi-GPU.
             if self.aux is not None:
-                for aux_name, aux_value in self.aux.step_separate_losses(batch, original_batch_size).items():
+                for aux_name, aux_value in self.aux.step_separate_losses(batch, original_batch_size, iteration).items():
                     mean_aux_losses[aux_name] = mean_aux_losses.get(aux_name, 0.0) + aux_value
 
             # Store the losses
